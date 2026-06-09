@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
   AuthStorage,
@@ -34,6 +34,15 @@ function noop(): void {
 
 function authLossWarningKey(sessionId: string, provider: string, modelId: string): string {
   return `${sessionId}:${provider}/${modelId}`;
+}
+
+async function sessionFileSnapshot(path: string): Promise<SessionFileSnapshot | undefined> {
+  try {
+    const fileStat = await stat(path);
+    return { path, mtimeMs: fileStat.mtimeMs, size: fileStat.size };
+  } catch {
+    return undefined;
+  }
 }
 
 type QueuedPromptKind = "steer" | "followUp";
@@ -188,6 +197,12 @@ interface ExtensionUiResponse {
 
 type ExtensionUiResolver = (response: ExtensionUiResponse) => void;
 
+interface SessionFileSnapshot {
+  path: string;
+  mtimeMs: number;
+  size: number;
+}
+
 function createPiWebEditToolDefinition(cwd: string) {
   const editTool = createEditToolDefinition(cwd);
   return defineTool<typeof editTool.parameters, PiWebEditToolDetails>({
@@ -231,6 +246,7 @@ export class PiSessionService {
   private readonly authLossWarnings = new Set<string>();
   private readonly extensionUiPending = new Map<string, ExtensionUiRequest[]>();
   private readonly extensionUiResolvers = new Map<string, ExtensionUiResolver>();
+  private readonly activeFileSnapshots = new Map<string, SessionFileSnapshot>();
   private readonly archiveStore: SessionArchiveRepository;
   private readonly agentDir: string;
   private readonly sessionManager: PiSessionManagerGateway;
@@ -280,6 +296,7 @@ export class PiSessionService {
     this.authLossWarnings.clear();
     this.extensionUiPending.clear();
     this.extensionUiResolvers.clear();
+    this.activeFileSnapshots.clear();
     await Promise.all(activeSessions.map(async (active) => {
       active.unsubscribe();
       this.workspaceActivity?.removeSession(active.runtime.session.sessionId, active.runtime.session.sessionManager.getCwd());
@@ -321,12 +338,12 @@ export class PiSessionService {
   }
 
   async messages(sessionId: string, page?: { before?: number; limit?: number }): Promise<unknown[] | ClientMessagePage> {
-    const session = await this.getOrOpen(sessionId);
+    const session = await this.getFreshOrOpen(sessionId);
     return pageMessagesAtSafeBoundary(historyMessages(session), page);
   }
 
   async status(sessionId: string): Promise<ClientSessionStatus> {
-    return this.statusFromSession(await this.getOrOpen(sessionId));
+    return this.statusFromSession(await this.getFreshOrOpen(sessionId));
   }
 
   async availableModels(sessionId: string): Promise<ClientSessionModel[]> {
@@ -635,11 +652,12 @@ export class PiSessionService {
     return [...names];
   }
 
-  private async closeActive(sessionId: string): Promise<void> {
+  private async closeActive(sessionId: string, options: { abort?: boolean } = {}): Promise<void> {
     const active = this.active.get(sessionId);
     if (!active) return;
     this.active.delete(sessionId);
     this.activities.delete(sessionId);
+    this.activeFileSnapshots.delete(sessionId);
     this.workspaceActivity?.removeSession(sessionId, active.runtime.session.sessionManager.getCwd());
     this.clearAuthLossWarningsForSession(sessionId);
     this.clearCompactionPromptQueue(sessionId);
@@ -647,10 +665,49 @@ export class PiSessionService {
     clearSessionQueue(active.runtime.session);
     active.unsubscribe();
     try {
-      await active.runtime.session.abort();
+      if (options.abort !== false) await active.runtime.session.abort();
     } finally {
       await active.runtime.dispose();
     }
+  }
+
+  private async getFreshOrOpen(sessionId: string): Promise<PiAgentSession> {
+    const active = this.active.get(sessionId);
+    if (active === undefined) return this.getOrOpen(sessionId);
+
+    const sessionFile = active.runtime.session.sessionFile;
+    const cwd = active.runtime.session.sessionManager.getCwd();
+    if (sessionFile === undefined || sessionFile === "") return active.runtime.session;
+    if (!(await this.shouldReloadActiveFromDisk(active))) return active.runtime.session;
+
+    await this.closeActive(active.runtime.session.sessionId, { abort: false });
+    return (await this.create(this.sessionManager.open(sessionFile), cwd)).runtime.session;
+  }
+
+  private async shouldReloadActiveFromDisk(active: ActiveSession<PiSessionRuntime>): Promise<boolean> {
+    const { session } = active.runtime;
+    if (this.isSessionBusy(session)) return false;
+    const sessionFile = session.sessionFile;
+    if (sessionFile === undefined || sessionFile === "") return false;
+
+    const latest = await sessionFileSnapshot(sessionFile);
+    if (latest === undefined) return false;
+    const previous = this.activeFileSnapshots.get(session.sessionId);
+    if (previous?.path !== latest.path) {
+      this.activeFileSnapshots.set(session.sessionId, latest);
+      return false;
+    }
+    return previous.size !== latest.size || previous.mtimeMs !== latest.mtimeMs;
+  }
+
+  private isSessionBusy(session: PiAgentSession): boolean {
+    return session.isStreaming
+      || session.isBashRunning
+      || session.isCompacting
+      || session.pendingMessageCount > 0
+      || session.getSteeringMessages().length > 0
+      || session.getFollowUpMessages().length > 0
+      || (this.extensionUiPending.get(session.sessionId)?.length ?? 0) > 0;
   }
 
   private async assertWritable(sessionId: string): Promise<void> {
@@ -684,8 +741,16 @@ export class PiSessionService {
       return Promise.resolve();
     });
     this.active.set(runtime.session.sessionId, active);
+    await this.recordActiveFileSnapshot(runtime.session);
     this.publishStatus(runtime.session);
     return active;
+  }
+
+  private async recordActiveFileSnapshot(session: PiAgentSession): Promise<void> {
+    const sessionFile = session.sessionFile;
+    if (sessionFile === undefined || sessionFile === "") return;
+    const snapshot = await sessionFileSnapshot(sessionFile);
+    if (snapshot !== undefined) this.activeFileSnapshots.set(session.sessionId, snapshot);
   }
 
   private async bindExtensionUi(runtime: PiSessionRuntime): Promise<void> {

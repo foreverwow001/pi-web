@@ -1,3 +1,6 @@
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import type { GlobalSessionEvent, SessionUiEvent } from "../../shared/apiTypes.js";
@@ -32,11 +35,19 @@ interface TestSession extends PiAgentSession {
 }
 
 function fakeSessionManager(cwd = "/workspace"): PiSessionManager {
+  return branchSessionManager([], cwd);
+}
+
+function branchSessionManager(branch: unknown[], cwd = "/workspace"): PiSessionManager {
   return {
     getCwd: () => cwd,
-    getBranch: () => [],
+    getBranch: () => branch,
     getLeafId: () => "leaf-1",
   };
+}
+
+function userBranchMessage(text: string): unknown {
+  return { type: "message", message: { role: "user", content: text } };
 }
 
 function sessionRecord(id: string, cwd = "/workspace") {
@@ -153,6 +164,92 @@ describe("PiSessionService", () => {
     await service.dispose();
     expect(fake.calls.abort).toBe(1);
     expect(fake.calls.dispose).toBe(1);
+  });
+
+  it("reloads an idle cached session when the persisted session file changes externally", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-web-session-reload-"));
+    const sessionPath = join(root, "session.jsonl");
+    await writeFile(sessionPath, "old\n", "utf8");
+
+    const branches = [[userBranchMessage("old")], [userBranchMessage("new")]];
+    let openCalls = 0;
+    let abortCalls = 0;
+    let disposeCalls = 0;
+    const createAgentRuntime: RuntimeCreator = async (_createRuntime, options) => {
+      await Promise.resolve();
+      const branch = branches[Math.min(openCalls, branches.length - 1)] ?? [];
+      openCalls += 1;
+      const fake = fakeRuntime("reload-session", {
+        sessionFile: sessionPath,
+        sessionManager: branchSessionManager(branch, options.cwd),
+        abort: () => {
+          abortCalls += 1;
+          return Promise.resolve();
+        },
+      });
+      const originalDispose = fake.runtime.dispose.bind(fake.runtime);
+      fake.runtime.dispose = async () => {
+        disposeCalls += 1;
+        await originalDispose();
+      };
+      return fake.runtime;
+    };
+    const service = new PiSessionService(new CapturingSessionEventHub(), {
+      createAgentRuntime,
+      sessionManager: {
+        create: () => fakeSessionManager(),
+        list: () => Promise.resolve([sessionRecord("reload-session")]),
+        listAll: () => Promise.resolve([{ ...sessionRecord("reload-session"), path: sessionPath }]),
+        open: () => fakeSessionManager(),
+      },
+      heartbeatIntervalMs: 60_000,
+    });
+
+    await expect(service.messages("reload-session")).resolves.toEqual([{ role: "user", content: "old" }]);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await writeFile(sessionPath, "old\nnew\n", "utf8");
+
+    await expect(service.messages("reload-session")).resolves.toEqual([{ role: "user", content: "new" }]);
+    expect(openCalls).toBe(2);
+    expect(abortCalls).toBe(0);
+    expect(disposeCalls).toBe(1);
+
+    await service.dispose();
+  });
+
+  it("does not reload an externally modified session while the cached runtime is busy", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-web-session-busy-"));
+    const sessionPath = join(root, "session.jsonl");
+    await writeFile(sessionPath, "old\n", "utf8");
+
+    let openCalls = 0;
+    const createAgentRuntime: RuntimeCreator = async (_createRuntime, options) => {
+      await Promise.resolve();
+      openCalls += 1;
+      return fakeRuntime("busy-session", {
+        sessionFile: sessionPath,
+        sessionManager: branchSessionManager([userBranchMessage("old")], options.cwd),
+        isStreaming: true,
+      }).runtime;
+    };
+    const service = new PiSessionService(new CapturingSessionEventHub(), {
+      createAgentRuntime,
+      sessionManager: {
+        create: () => fakeSessionManager(),
+        list: () => Promise.resolve([sessionRecord("busy-session")]),
+        listAll: () => Promise.resolve([{ ...sessionRecord("busy-session"), path: sessionPath }]),
+        open: () => fakeSessionManager(),
+      },
+      heartbeatIntervalMs: 60_000,
+    });
+
+    await expect(service.messages("busy-session")).resolves.toEqual([{ role: "user", content: "old" }]);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await writeFile(sessionPath, "old\nnew\n", "utf8");
+    await expect(service.messages("busy-session")).resolves.toEqual([{ role: "user", content: "old" }]);
+    expect(openCalls).toBe(1);
+
+    await service.dispose();
   });
 
   it("clears stale active activity once a previously active session becomes idle", async () => {
