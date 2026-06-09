@@ -72,6 +72,16 @@ export class OAuthLoginFlowService {
         if (!this.isCurrentRunning(record)) return;
         this.updateState(record, { ...record.state, auth: info });
       },
+      onDeviceCode: (info) => {
+        if (!this.isCurrentRunning(record)) return;
+        this.updateState(record, {
+          ...record.state,
+          auth: {
+            url: info.verificationUri,
+            instructions: `Enter code: ${info.userCode}`,
+          },
+        });
+      },
       onPrompt: (prompt) => this.waitForPrompt(record, prompt, "prompt"),
       onManualCodeInput: () => this.waitForPrompt(record, { message: "Paste the callback URL or authorization code", allowEmpty: false }, "manual"),
       onSelect: (prompt) => this.waitForSelect(record, prompt),

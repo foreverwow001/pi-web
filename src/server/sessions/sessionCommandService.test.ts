@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { SessionUiEvent } from "../../shared/apiTypes.js";
 import { SessionCommandService, type CommandActiveSession, type CommandSession } from "./sessionCommandService.js";
 
@@ -64,6 +65,37 @@ describe("SessionCommandService", () => {
     await expect(service.run("s1", "/template arg")).resolves.toMatchObject({ type: "done" });
     await expect(service.run("s1", "/skill:skill-a arg")).resolves.toMatchObject({ type: "done" });
     expect(prompt).toHaveBeenCalledTimes(3);
+  });
+
+  it("runs extension commands through the extension runner instead of forwarding them as prompts", async () => {
+    const handler = vi.fn(async () => {
+      await Promise.resolve();
+    });
+    // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+    const commandContext = { mode: "web" } as unknown as ExtensionCommandContext;
+    const createCommandContext = vi.fn(() => commandContext);
+    const active = activeSession({
+      extensionRunner: {
+        getRegisteredCommands: () => [{ invocationName: "ext" }],
+        getCommand: (name: string) => name === "ext" ? {
+          invocationName: "ext",
+          name: "ext",
+          sourceInfo: { path: "test", source: "test", scope: "temporary", origin: "top-level" },
+          handler,
+        } : undefined,
+        createCommandContext,
+      },
+    });
+    const prompt = vi.fn(promptAccepted);
+    const events = eventPublisher();
+    const service = new SessionCommandService(() => getActive(active), prompt, events);
+
+    await expect(service.run("s1", "/ext arg one")).resolves.toEqual({ type: "done", message: "Started /ext" });
+    await vi.waitFor(() => {
+      expect(handler).toHaveBeenCalledWith("arg one", commandContext);
+    });
+    expect(prompt).not.toHaveBeenCalled();
+    expect(events.publish).toHaveBeenCalledWith("s1", { type: "command.output", level: "success", message: "Command completed: /ext" });
   });
 
   it("renames sessions and returns updated client session metadata", async () => {

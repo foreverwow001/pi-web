@@ -12,6 +12,8 @@ import {
   SessionManager,
   type CreateAgentSessionRuntimeFactory,
   type EditToolDetails,
+  type ExtensionCommandContext,
+  type ResolvedCommand,
 } from "@earendil-works/pi-coding-agent";
 import type { ClientArchiveSessionsResponse, ClientCommand, ClientCommandResult, ClientMessagePage, ClientSession, ClientSessionModel, ClientSessionStatus, ClientThinkingLevel, SessionUiEvent } from "../types.js";
 import { pageMessagesAtSafeBoundary } from "./messagePaging.js";
@@ -103,10 +105,15 @@ export interface PiAgentSession {
   isCompacting: boolean;
   isBashRunning: boolean;
   pendingMessageCount: number;
-  extensionRunner: { getRegisteredCommands(): readonly { invocationName: string; description?: string }[] };
+  extensionRunner: {
+    getRegisteredCommands(): readonly { invocationName: string; description?: string }[];
+    getCommand?(name: string): ResolvedCommand | undefined;
+    createCommandContext?(): ExtensionCommandContext;
+  };
   promptTemplates: readonly { name: string; description?: string }[];
   resourceLoader: { getSkills(): { skills: readonly { name: string; description?: string }[] } };
   subscribe(listener: (event: unknown) => void): () => void;
+  bindExtensions?(bindings: unknown): Promise<void>;
   compact(instructions?: string): Promise<{ summary: string; tokensBefore: number }>;
   getUserMessagesForForking(): readonly { entryId: string; text: string }[];
   getSessionStats(): { sessionId: string; totalMessages: number; userMessages: number; assistantMessages: number; toolCalls: number; tokens: ClientSessionStatus["tokens"]; cost: number };
@@ -160,6 +167,27 @@ function createDefaultRuntimeFactory(authStorage: AuthStorage, modelRegistry: Mo
 
 type PiWebEditToolDetails = EditToolDetails | { preview: EditPreviewResult } | undefined;
 
+type ExtensionUiMethod = "select" | "confirm" | "input";
+
+interface ExtensionUiRequest {
+  requestId: string;
+  method: ExtensionUiMethod;
+  title?: string;
+  message?: string;
+  placeholder?: string;
+  options?: readonly string[];
+  createdAt: string;
+  timeoutMs: number;
+}
+
+interface ExtensionUiResponse {
+  value?: unknown;
+  confirmed?: unknown;
+  cancelled?: unknown;
+}
+
+type ExtensionUiResolver = (response: ExtensionUiResponse) => void;
+
 function createPiWebEditToolDefinition(cwd: string) {
   const editTool = createEditToolDefinition(cwd);
   return defineTool<typeof editTool.parameters, PiWebEditToolDetails>({
@@ -201,6 +229,8 @@ export class PiSessionService {
   private readonly compactionPromptQueues = new Map<string, QueuedPrompt[]>();
   private readonly compactionDrainTimers = new Map<string, NodeJS.Timeout>();
   private readonly authLossWarnings = new Set<string>();
+  private readonly extensionUiPending = new Map<string, ExtensionUiRequest[]>();
+  private readonly extensionUiResolvers = new Map<string, ExtensionUiResolver>();
   private readonly archiveStore: SessionArchiveRepository;
   private readonly agentDir: string;
   private readonly sessionManager: PiSessionManagerGateway;
@@ -248,6 +278,8 @@ export class PiSessionService {
     this.activities.clear();
     this.compactionPromptQueues.clear();
     this.authLossWarnings.clear();
+    this.extensionUiPending.clear();
+    this.extensionUiResolvers.clear();
     await Promise.all(activeSessions.map(async (active) => {
       active.unsubscribe();
       this.workspaceActivity?.removeSession(active.runtime.session.sessionId, active.runtime.session.sessionManager.getCwd());
@@ -456,6 +488,21 @@ export class PiSessionService {
     return this.commandService.respond(sessionId, requestId, value);
   }
 
+  async listExtensionUiPending(sessionId: string): Promise<{ requests: readonly ExtensionUiRequest[] }> {
+    await this.getOrOpen(sessionId);
+    return { requests: this.extensionUiPending.get(sessionId) ?? [] };
+  }
+
+  async respondExtensionUi(sessionId: string, requestId: string, response: ExtensionUiResponse): Promise<{ accepted: true }> {
+    await this.assertWritable(sessionId);
+    const pending = this.extensionUiPending.get(sessionId) ?? [];
+    if (!pending.some((item) => item.requestId === requestId)) throw new Error("Extension UI request not found");
+    const resolver = this.extensionUiResolvers.get(requestId);
+    if (resolver === undefined) throw new Error("Extension UI resolver not found");
+    resolver(response);
+    return { accepted: true };
+  }
+
   async archive(sessionId: string): Promise<void> {
     const session = await this.getOrOpen(sessionId);
     if (this.hasActiveWork(session)) throw new Error("Stop current session activity before archiving");
@@ -500,6 +547,7 @@ export class PiSessionService {
     const active = this.active.get(sessionId);
     if (!active) return;
     this.clearCompactionPromptQueue(sessionId);
+    this.clearExtensionUiForSession(sessionId);
     clearSessionQueue(active.runtime.session);
     await active.runtime.session.abort();
     this.publishActivity(active.runtime.session, "stopped", "idle");
@@ -595,6 +643,7 @@ export class PiSessionService {
     this.workspaceActivity?.removeSession(sessionId, active.runtime.session.sessionManager.getCwd());
     this.clearAuthLossWarningsForSession(sessionId);
     this.clearCompactionPromptQueue(sessionId);
+    this.clearExtensionUiForSession(sessionId);
     clearSessionQueue(active.runtime.session);
     active.unsubscribe();
     try {
@@ -628,13 +677,103 @@ export class PiSessionService {
     const runtime = await this.createAgentRuntime(this.createRuntime, { cwd, agentDir: this.agentDir, sessionManager });
     const active: ActiveSession<PiSessionRuntime> = { runtime, unsubscribe: noop };
     this.bindRuntime(active);
+    await this.bindExtensionUi(runtime);
     runtime.setRebindSession(() => {
       this.bindRuntime(active);
+      this.bindExtensionUi(runtime).catch(() => undefined);
       return Promise.resolve();
     });
     this.active.set(runtime.session.sessionId, active);
     this.publishStatus(runtime.session);
     return active;
+  }
+
+  private async bindExtensionUi(runtime: PiSessionRuntime): Promise<void> {
+    const { session } = runtime;
+    if (typeof session.bindExtensions !== "function") return;
+    await session.bindExtensions({ uiContext: this.createExtensionUiContext(runtime.session.sessionId), mode: "tui" });
+  }
+
+  private createExtensionUiContext(sessionId: string) {
+    const request = (method: ExtensionUiMethod, payload: Omit<ExtensionUiRequest, "requestId" | "method" | "createdAt" | "timeoutMs">, timeoutMs?: number): Promise<string | boolean | undefined> => new Promise((resolve) => {
+      const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+      const entry: ExtensionUiRequest = { requestId, method, ...payload, createdAt: new Date().toISOString(), timeoutMs: timeoutMs ?? 0 };
+      this.extensionUiPending.set(sessionId, [...this.extensionUiPending.get(sessionId) ?? [], entry]);
+
+      const cleanup = () => {
+        this.extensionUiResolvers.delete(requestId);
+        const current = this.extensionUiPending.get(sessionId) ?? [];
+        this.extensionUiPending.set(sessionId, current.filter((item) => item.requestId !== requestId));
+      };
+
+      let timer: NodeJS.Timeout | undefined;
+      if (timeoutMs !== undefined && timeoutMs > 0) {
+        timer = setTimeout(() => {
+          cleanup();
+          resolve(undefined);
+        }, timeoutMs);
+        timer.unref();
+      }
+
+      this.extensionUiResolvers.set(requestId, (response) => {
+        if (timer !== undefined) clearTimeout(timer);
+        cleanup();
+        if (response.cancelled === true) {
+          resolve(undefined);
+          return;
+        }
+        if (method === "confirm") {
+          resolve(response.confirmed === true);
+          return;
+        }
+        resolve(typeof response.value === "string" ? response.value : undefined);
+      });
+
+      this.events.publish(sessionId, { type: "extension.ui.request", request: entry });
+    });
+
+    return {
+      select: (title: string, options: string[], opts?: { timeout?: number }) => request("select", { title, options }, opts?.timeout),
+      confirm: (title: string, message: string, opts?: { timeout?: number }) => request("confirm", { title, message }, opts?.timeout),
+      input: (title: string, placeholder?: string, opts?: { timeout?: number }) => request("input", placeholder === undefined ? { title } : { title, placeholder }, opts?.timeout),
+      notify: (message: string, type: "info" | "warning" | "error" = "info") => {
+        this.events.publish(sessionId, { type: "command.output", level: type === "error" ? "error" : "info", message: type === "warning" ? `Warning: ${message}` : message });
+      },
+      onTerminalInput: () => noop,
+      setStatus: () => undefined,
+      setWorkingMessage: () => undefined,
+      setWorkingVisible: () => undefined,
+      setWorkingIndicator: () => undefined,
+      setHiddenThinkingLabel: () => undefined,
+      setWidget: () => undefined,
+      setFooter: () => undefined,
+      setHeader: () => undefined,
+      setTitle: () => undefined,
+      custom: () => Promise.resolve(undefined),
+      pasteToEditor: () => undefined,
+      setEditorText: () => undefined,
+      getEditorText: () => "",
+      editor: (title: string, prefill?: string, opts?: { timeout?: number }) => request("input", { title, placeholder: prefill ?? "" }, opts?.timeout),
+      addAutocompleteProvider: () => undefined,
+      setEditorComponent: () => undefined,
+      getEditorComponent: () => undefined,
+      get theme() { return {}; },
+      getAllThemes: () => [],
+      getTheme: () => undefined,
+      setTheme: () => ({ success: false, error: "PI WEB browser UI does not support extension theme switching" }),
+      getToolsExpanded: () => false,
+      setToolsExpanded: () => undefined,
+    };
+  }
+
+  private clearExtensionUiForSession(sessionId: string): void {
+    const pending = this.extensionUiPending.get(sessionId) ?? [];
+    for (const item of pending) {
+      const resolver = this.extensionUiResolvers.get(item.requestId);
+      resolver?.({ cancelled: true });
+      this.extensionUiResolvers.delete(item.requestId);
+    }
+    this.extensionUiPending.delete(sessionId);
   }
 
   private bindRuntime(active: ActiveSession<PiSessionRuntime>): void {
@@ -643,7 +782,10 @@ export class PiSessionService {
     for (const [sessionId, candidate] of this.active.entries()) {
       if (candidate === active) {
         this.active.delete(sessionId);
-        if (sessionId !== session.sessionId) this.clearCompactionPromptQueue(sessionId);
+        if (sessionId !== session.sessionId) {
+          this.clearCompactionPromptQueue(sessionId);
+          this.clearExtensionUiForSession(sessionId);
+        }
       }
     }
     active.unsubscribe = session.subscribe((event) => {

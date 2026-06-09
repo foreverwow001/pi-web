@@ -128,6 +128,22 @@ export function registerSessionRoutes(app: FastifyInstance, sessions: PiSessionS
     }
   });
 
+  app.get<{ Params: { sessionId: string } }>(`${prefix}/sessions/:sessionId/extension-ui/pending`, async (request, reply) => {
+    try {
+      return await sessions.listExtensionUiPending(request.params.sessionId);
+    } catch (error) {
+      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post<{ Params: { sessionId: string }; Body: { requestId: string; value?: unknown; confirmed?: unknown; cancelled?: unknown } }>(`${prefix}/sessions/:sessionId/extension-ui/respond`, async (request, reply) => {
+    try {
+      return await sessions.respondExtensionUi(request.params.sessionId, request.body.requestId, request.body);
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.post<{ Params: { sessionId: string } }>(`${prefix}/sessions/:sessionId/abort`, async (request) => {
     await sessions.abort(request.params.sessionId);
     return { aborted: true };

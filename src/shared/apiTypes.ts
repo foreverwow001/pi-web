@@ -418,6 +418,7 @@ export type SessionUiEvent =
   | { type: "status.update"; status: SessionStatus }
   | { type: "activity.update"; activity: SessionActivity }
   | { type: "command.output"; level: "info" | "success" | "error"; message: string }
+  | { type: "extension.ui.request"; request: unknown }
   | { type: "session.error"; message: string }
   | { type: "session.name"; sessionId: string; name?: string }
   | { type: "pi.event"; eventType: string };
