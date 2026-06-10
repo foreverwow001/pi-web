@@ -97,8 +97,15 @@ export class PromptEditor extends LitElement {
       <div class="compact-status" aria-label="Session status">
         <button class="select-model" title="Select model" @click=${() => this.onSelectModel?.()}>${provider}${model}</button>
         <button class="select-thinking" title="Select thinking level" @click=${() => this.onSelectThinking?.()}>think ${status.thinkingLevel ?? "off"}</button>
+        ${this.renderExtensionStatus("ivyhouse-fast")}
       </div>
     `;
+  }
+
+  private renderExtensionStatus(key: string) {
+    const item = this.status?.extensionStatuses?.find((status) => status.key === key);
+    if (item === undefined || item.label.trim().length === 0) return null;
+    return html`<span class="status-pill" title=${item.label}>${item.label}</span>`;
   }
 
   private createEditor() {

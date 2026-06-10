@@ -170,10 +170,16 @@ export interface ThinkingLevelsResponse {
   levels: ThinkingLevel[];
 }
 
+export interface SessionExtensionStatus {
+  key: string;
+  label: string;
+}
+
 export interface SessionStatus {
   sessionId: string;
   model?: SessionModel;
   thinkingLevel?: string;
+  extensionStatuses?: SessionExtensionStatus[];
   isStreaming: boolean;
   isCompacting: boolean;
   isBashRunning: boolean;

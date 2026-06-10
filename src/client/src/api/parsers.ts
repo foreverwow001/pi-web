@@ -1,4 +1,4 @@
-import type { ArchiveSessionsResponse, AuthProviderOption, AuthProviderStatus, AuthProvidersResponse, AuthStatusSource, AuthType, CommandOption, CommandResult, FileContentResponse, FileSuggestion, FileTreeEntry, FileTreeResponse, GitDiffResponse, GitFileState, GitStatusFile, GitStatusResponse, Machine, MachineHealth, MachineKind, MachineStatus, MessagePage, ModelSelectionResponse, OAuthFlowState, PiWebComponentStatus, PiWebConfigEnvOverrides, PiWebConfigResponse, PiWebConfigValues, PiWebInstallationInfo, PiWebPluginConfigMap, PiWebPluginInfo, PiWebPluginsResponse, PiWebPluginScope, PiWebReleaseStatus, PiWebServiceComponent, PiWebShortcutConfig, PiWebStatusMessage, PiWebStatusResponse, PiWebStatusSeverity, Project, QueuedSessionMessage, SessionInfo, SessionModel, SessionStatus, SlashCommand, TerminalCommandRun, TerminalCommandRunStatus, TerminalInfo, ThinkingLevel, ThinkingLevelsResponse, Workspace, WorkspaceActivity, WorkspaceActivityResponse } from "../../../shared/apiTypes";
+import type { ArchiveSessionsResponse, AuthProviderOption, AuthProviderStatus, AuthProvidersResponse, AuthStatusSource, AuthType, CommandOption, CommandResult, FileContentResponse, FileSuggestion, FileTreeEntry, FileTreeResponse, GitDiffResponse, GitFileState, GitStatusFile, GitStatusResponse, Machine, MachineHealth, MachineKind, MachineStatus, MessagePage, ModelSelectionResponse, OAuthFlowState, PiWebComponentStatus, PiWebConfigEnvOverrides, PiWebConfigResponse, PiWebConfigValues, PiWebInstallationInfo, PiWebPluginConfigMap, PiWebPluginInfo, PiWebPluginsResponse, PiWebPluginScope, PiWebReleaseStatus, PiWebServiceComponent, PiWebShortcutConfig, PiWebStatusMessage, PiWebStatusResponse, PiWebStatusSeverity, Project, QueuedSessionMessage, SessionExtensionStatus, SessionInfo, SessionModel, SessionStatus, SlashCommand, TerminalCommandRun, TerminalCommandRunStatus, TerminalInfo, ThinkingLevel, ThinkingLevelsResponse, Workspace, WorkspaceActivity, WorkspaceActivityResponse } from "../../../shared/apiTypes";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -162,8 +162,19 @@ export function parseSessionStatus(value: unknown): SessionStatus {
     cost: requireNumber(record, "cost"),
     ...optionalModel(record["model"]),
     ...optionalContextUsage(record["contextUsage"]),
+    ...optionalExtensionStatuses(record["extensionStatuses"]),
     ...optionalField("thinkingLevel", optionalString(record, "thinkingLevel")),
   };
+}
+
+function optionalExtensionStatuses(value: unknown): Pick<SessionStatus, "extensionStatuses"> | object {
+  if (value === undefined) return {};
+  return { extensionStatuses: arrayOf(parseSessionExtensionStatus)(value) };
+}
+
+function parseSessionExtensionStatus(value: unknown): SessionExtensionStatus {
+  const record = requireRecord(value);
+  return { key: requireString(record, "key"), label: requireString(record, "label") };
 }
 
 function parseQueuedSessionMessage(value: unknown): QueuedSessionMessage {

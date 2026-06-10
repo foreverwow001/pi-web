@@ -32,6 +32,19 @@ function noop(): void {
   // Intentionally empty default unsubscribe callback.
 }
 
+const ANSI_ESCAPE_PATTERN = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, "g");
+
+function stripAnsi(value: string): string {
+  return value.replace(ANSI_ESCAPE_PATTERN, "");
+}
+
+function extensionStatusLabel(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string") return stripAnsi(value).trim();
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return undefined;
+}
+
 function authLossWarningKey(sessionId: string, provider: string, modelId: string): string {
   return `${sessionId}:${provider}/${modelId}`;
 }
@@ -246,6 +259,7 @@ export class PiSessionService {
   private readonly authLossWarnings = new Set<string>();
   private readonly extensionUiPending = new Map<string, ExtensionUiRequest[]>();
   private readonly extensionUiResolvers = new Map<string, ExtensionUiResolver>();
+  private readonly extensionStatuses = new Map<string, Map<string, string>>();
   private readonly activeFileSnapshots = new Map<string, SessionFileSnapshot>();
   private readonly archiveStore: SessionArchiveRepository;
   private readonly agentDir: string;
@@ -296,6 +310,7 @@ export class PiSessionService {
     this.authLossWarnings.clear();
     this.extensionUiPending.clear();
     this.extensionUiResolvers.clear();
+    this.extensionStatuses.clear();
     this.activeFileSnapshots.clear();
     await Promise.all(activeSessions.map(async (active) => {
       active.unsubscribe();
@@ -805,7 +820,9 @@ export class PiSessionService {
         this.events.publish(sessionId, { type: "command.output", level: type === "error" ? "error" : "info", message: type === "warning" ? `Warning: ${message}` : message });
       },
       onTerminalInput: () => noop,
-      setStatus: () => undefined,
+      setStatus: (key: string, label?: unknown) => {
+        this.setExtensionStatus(sessionId, key, label);
+      },
       setWorkingMessage: () => undefined,
       setWorkingVisible: () => undefined,
       setWorkingIndicator: () => undefined,
@@ -822,7 +839,7 @@ export class PiSessionService {
       addAutocompleteProvider: () => undefined,
       setEditorComponent: () => undefined,
       getEditorComponent: () => undefined,
-      get theme() { return {}; },
+      get theme() { return { fg: (_color: string, text: string) => text }; },
       getAllThemes: () => [],
       getTheme: () => undefined,
       setTheme: () => ({ success: false, error: "PI WEB browser UI does not support extension theme switching" }),
@@ -1086,7 +1103,32 @@ export class PiSessionService {
       tokens: stats.tokens,
       cost: stats.cost,
       ...(contextUsage === undefined ? {} : { contextUsage }),
+      ...this.extensionStatusesForClient(session.sessionId),
     };
+  }
+
+  private setExtensionStatus(sessionId: string, key: string, label: unknown): void {
+    if (typeof key !== "string" || key.trim().length === 0) return;
+    let statuses = this.extensionStatuses.get(sessionId);
+    if (statuses === undefined) {
+      statuses = new Map<string, string>();
+      this.extensionStatuses.set(sessionId, statuses);
+    }
+    const labelText = extensionStatusLabel(label);
+    if (labelText === undefined || labelText.length === 0) {
+      statuses.delete(key);
+      if (statuses.size === 0) this.extensionStatuses.delete(sessionId);
+    } else {
+      statuses.set(key, labelText);
+    }
+    const active = this.active.get(sessionId);
+    if (active !== undefined) this.publishStatus(active.runtime.session);
+  }
+
+  private extensionStatusesForClient(sessionId: string): Pick<ClientSessionStatus, "extensionStatuses"> | object {
+    const statuses = this.extensionStatuses.get(sessionId);
+    if (statuses === undefined || statuses.size === 0) return {};
+    return { extensionStatuses: [...statuses.entries()].map(([key, label]) => ({ key, label })) };
   }
 
   private pendingMessageCount(session: PiAgentSession): number {
