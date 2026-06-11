@@ -1,9 +1,12 @@
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { FastifyInstance } from "fastify";
+import { SessionDaemonClient } from "../sessiond/sessionDaemonClient.js";
+import type { SessionProxyDaemon } from "./sessiond/sessionProxyRoutes.js";
 
 export type GateAutoAnswerMode = "manual" | "semi-auto" | "autopilot";
 
@@ -37,13 +40,21 @@ interface IvyhouseStatusPanelResponse {
 
 const STATE_DIR = join(homedir(), ".local", "share", "ivyhouse", "pi-sidebar");
 const GATE_MODE_PATH = ".workflow-core/state/gate-autoanswer/mode-state.json";
+const READINESS_TTL_MS = 30_000;
+const READINESS_TIMEOUT_MS = 8_000;
 
 type RecordValue = Record<string, unknown>;
+interface CachedReadiness {
+  expiresAt: number;
+  status: StatusKind;
+}
 
-export function registerIvyhouseStatusPanelRoutes(app: FastifyInstance): void {
+const readinessCache = new Map<string, CachedReadiness>();
+
+export function registerIvyhouseStatusPanelRoutes(app: FastifyInstance, daemon: SessionProxyDaemon = new SessionDaemonClient()): void {
   app.get<{ Querystring: { cwd?: string } }>("/api/ivyhouse/status-panel", async (request, reply) => {
     try {
-      return await buildStatusPanel(resolveCwd(request.query.cwd));
+      return await buildStatusPanel(resolveCwd(request.query.cwd), daemon);
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -70,14 +81,15 @@ export function registerIvyhouseStatusPanelRoutes(app: FastifyInstance): void {
   });
 }
 
-async function buildStatusPanel(cwd: string): Promise<IvyhouseStatusPanelResponse> {
-  const [gate, sidebarSnapshot, todoSnapshot, mcpServers, lspServers, plugins] = await Promise.all([
+async function buildStatusPanel(cwd: string, daemon: SessionProxyDaemon): Promise<IvyhouseStatusPanelResponse> {
+  const [gate, sidebarSnapshot, todoSnapshot, mcpServers, lspServers, plugins, backgroundShells] = await Promise.all([
     readGateMode(cwd).then(normalizeGateMode),
     readSidebarSnapshot(cwd),
     readTodoSnapshot(cwd),
     readMcpServers(cwd),
     readLspServers(cwd),
     readPlugins(cwd),
+    readBackgroundShells(cwd, daemon),
   ]);
 
   const metrics: IvyhouseStatusPanelResponse["metrics"] = {};
@@ -99,7 +111,7 @@ async function buildStatusPanel(cwd: string): Promise<IvyhouseStatusPanelRespons
     metrics,
     gateAutoAnswer: gate,
     plan: { items: todoSnapshot },
-    backgroundShells: [],
+    backgroundShells,
     mcpServers,
     lspServers,
     plugins,
@@ -182,19 +194,119 @@ async function readTodoSnapshot(cwd: string): Promise<IvyhouseStatusPanelRespons
 async function readMcpServers(cwd: string): Promise<IvyhouseStatusPanelResponse["mcpServers"]> {
   const parsed = await readJson(join(cwd, ".pi/mcp.json"));
   const mcpServers = isRecord(parsed) && isRecord(parsed["mcpServers"]) ? parsed["mcpServers"] : {};
-  return Object.entries(mcpServers).map(([name, config]) => {
+  return await Promise.all(Object.entries(mcpServers).map(async ([name, config]) => {
     const record = isRecord(config) ? config : {};
     const disabled = record["disabled"] === true;
     const policy = isRecord(record["ivyhousePolicy"]) ? record["ivyhousePolicy"] : {};
     const gated = policy["requiresExplicitOwnerApproval"] === true || policy["generalAgentAllowed"] === false || disabled;
-    return { name, status: disabled ? "gated" : gated ? "configured" : "configured", ...(disabled ? { disabled: true } : {}) };
-  });
+    if (disabled || gated) return { name, status: "gated" as const, ...(disabled ? { disabled: true } : {}) };
+    return { name, status: await checkMcpReadiness(cwd, name, record) };
+  }));
 }
 
 async function readLspServers(cwd: string): Promise<IvyhouseStatusPanelResponse["lspServers"]> {
   const parsed = await readJson(join(cwd, ".pi/lsp.json"));
   const servers = isRecord(parsed) && isRecord(parsed["lsp"]) ? parsed["lsp"] : {};
-  return Object.keys(servers).map((name) => ({ name, status: "configured" as const }));
+  return await Promise.all(Object.entries(servers).map(async ([name, config]) => {
+    const record = isRecord(config) ? config : {};
+    const command = Array.isArray(record["command"]) && typeof record["command"][0] === "string" ? record["command"][0] : undefined;
+    return { name, status: command === undefined ? "failed" as const : await checkExecutableReadiness(cwd, `lsp:${name}:${command}`, command) };
+  }));
+}
+
+async function checkMcpReadiness(cwd: string, name: string, config: RecordValue): Promise<StatusKind> {
+  const type = typeof config["type"] === "string" ? config["type"] : "stdio";
+  if (type === "http") {
+    const url = typeof config["url"] === "string" ? config["url"] : undefined;
+    if (url === undefined || url.trim() === "") return "failed";
+    const headers = resolveHeaders(config["headers"]);
+    if (headers === undefined) return "failed";
+    return await cachedReadiness(`mcp:http:${name}:${url}`, async () => await probeHttpMcp(url, headers));
+  }
+  const command = typeof config["command"] === "string" ? config["command"] : undefined;
+  return command === undefined ? "failed" : await checkExecutableReadiness(cwd, `mcp:stdio:${name}:${command}`, command);
+}
+
+async function probeHttpMcp(url: string, headers: Record<string, string>): Promise<StatusKind> {
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "accept": "application/json, text/event-stream",
+        "content-type": "application/json",
+        ...headers,
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "ivyhouse-pi-web-status", version: "1" } } }),
+      signal: AbortSignal.timeout(READINESS_TIMEOUT_MS),
+    });
+    return response.status >= 200 && response.status < 300 ? "ready" : "failed";
+  } catch {
+    return "failed";
+  }
+}
+
+function resolveHeaders(value: unknown): Record<string, string> | undefined {
+  if (!isRecord(value)) return {};
+  const headers: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (typeof raw !== "string") return undefined;
+    const resolved = raw.replace(/\$\{([A-Z0-9_]+)\}/gu, (_match, envName: string) => process.env[envName] ?? "");
+    if (resolved.includes("${") || resolved.trim() === "Bearer") return undefined;
+    headers[key] = resolved;
+  }
+  return headers;
+}
+
+async function checkExecutableReadiness(cwd: string, key: string, command: string): Promise<StatusKind> {
+  return await cachedReadiness(key, async () => await execFileOk("bash", ["-lc", `command -v ${shellQuote(command)} >/dev/null`], {
+    cwd,
+    env: { ...process.env, PATH: `${join(cwd, ".pi", "node_modules", ".bin")}:${process.env["PATH"] ?? ""}` },
+  }) ? "ready" : "failed");
+}
+
+async function cachedReadiness(key: string, probe: () => Promise<StatusKind>): Promise<StatusKind> {
+  const cached = readinessCache.get(key);
+  if (cached !== undefined && cached.expiresAt > Date.now()) return cached.status;
+  const status = await probe();
+  readinessCache.set(key, { status, expiresAt: Date.now() + READINESS_TTL_MS });
+  return status;
+}
+
+function execFileOk(command: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): Promise<boolean> {
+  return new Promise((resolveOk) => {
+    execFile(command, args, { ...options, timeout: READINESS_TIMEOUT_MS }, (error) => { resolveOk(error === null); });
+  });
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/gu, `'"'"'`)}'`;
+}
+
+async function readBackgroundShells(cwd: string, daemon: SessionProxyDaemon): Promise<IvyhouseStatusPanelResponse["backgroundShells"]> {
+  try {
+    const [terminalsResponse, runsResponse] = await Promise.all([
+      daemon.request("GET", `/terminals?cwd=${encodeURIComponent(cwd)}`),
+      daemon.request("GET", "/terminal-command-runs?statuses=queued,running"),
+    ]);
+    const terminals = parseRecords(terminalsResponse.body).filter((terminal) => terminal["exited"] !== true);
+    const runs = new Map(parseRecords(runsResponse.body).map((run) => [typeof run["terminalId"] === "string" ? run["terminalId"] : "", run]));
+    return terminals.flatMap((terminal) => {
+      const id = typeof terminal["id"] === "string" ? terminal["id"] : "";
+      const title = typeof terminal["name"] === "string" && terminal["name"].trim() !== "" ? terminal["name"] : "Shell";
+      const run = runs.get(id);
+      const status = run !== undefined && typeof run["status"] === "string" ? run["status"] : terminal["commandRunId"] === undefined ? "interactive" : "running";
+      if (id === "") return [];
+      return [{ title, status }];
+    }).slice(0, 20);
+  } catch {
+    return [];
+  }
+}
+
+function parseRecords(body: string): RecordValue[] {
+  if (body === "") return [];
+  const parsed: unknown = JSON.parse(body);
+  return Array.isArray(parsed) ? parsed.filter(isRecord) : [];
 }
 
 async function readPlugins(cwd: string): Promise<IvyhouseStatusPanelResponse["plugins"]> {

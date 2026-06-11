@@ -108,7 +108,7 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
   app.get("/api/pi-web/status", async () => getPiWebStatus());
   app.get("/api/pi-web/version", async () => getPiWebVersionStatus());
   app.get("/api/plugins", async () => piWebPlugins.plugins());
-  registerIvyhouseStatusPanelRoutes(app);
+  registerIvyhouseStatusPanelRoutes(app, sessionDaemon);
   registerConfigRoutes(app, deps.config);
 
   registerMachineRoutes(app, machines);
