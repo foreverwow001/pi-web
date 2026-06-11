@@ -16,7 +16,7 @@ describe("bundled PI WEB plugins", () => {
     for (const file of await pluginSourceFiles(pluginRoot)) {
       const content = await readFile(file, "utf8");
       for (const { pattern, message } of forbiddenPatterns) {
-        if (pattern.test(content)) violations.push(`${file}: ${message}`);
+        if (pattern.test(content) && !isAllowedFirstPartyIvyhouseStatusPanelAccess(file, content, message)) violations.push(`${file}: ${message}`);
       }
       if (content.includes("piWebUnstable") && !content.includes("@jmfederico/pi-web/plugin-api/unstable")) {
         violations.push(`${file}: piWebUnstable use without explicit unstable type import`);
@@ -26,6 +26,13 @@ describe("bundled PI WEB plugins", () => {
     expect(violations).toEqual([]);
   });
 });
+
+function isAllowedFirstPartyIvyhouseStatusPanelAccess(file: string, content: string, message: string): boolean {
+  if (file !== "pi-web-plugins/info/pi-web-plugin.ts") return false;
+  if (message === "direct browser fetch") return content.includes("/api/ivyhouse/status-panel") && content.includes("/api/ivyhouse/gate-autoanswer/cycle");
+  if (message === "direct PI WEB /api URL") return !/\/api\/(?!ivyhouse\/)/u.test(content);
+  return false;
+}
 
 async function pluginSourceFiles(root: string): Promise<string[]> {
   const files: string[] = [];

@@ -22,6 +22,7 @@ import { MachineService } from "./machines/machineService.js";
 import { registerMachineRoutes } from "./machines/machineRoutes.js";
 import { registerMachineProxyRoutes } from "./machines/machineProxyRoutes.js";
 import { proxyMachinePluginAsset, registerMachinePluginProxyRoutes } from "./machines/machinePluginProxyRoutes.js";
+import { registerIvyhouseStatusPanelRoutes } from "./ivyhouseStatusPanel.js";
 
 export interface AppDependencies {
   projects?: ProjectService;
@@ -107,6 +108,7 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
   app.get("/api/pi-web/status", async () => getPiWebStatus());
   app.get("/api/pi-web/version", async () => getPiWebVersionStatus());
   app.get("/api/plugins", async () => piWebPlugins.plugins());
+  registerIvyhouseStatusPanelRoutes(app);
   registerConfigRoutes(app, deps.config);
 
   registerMachineRoutes(app, machines);
