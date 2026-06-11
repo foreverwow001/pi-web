@@ -178,7 +178,14 @@ async function readSidebarSnapshot(cwd: string): Promise<{ usage?: Record<string
 }
 
 async function readTodoSnapshot(cwd: string): Promise<IvyhouseStatusPanelResponse["plan"]["items"]> {
-  const parsed = await readJson(join(STATE_DIR, `todo-state-${cwdHash(cwd)}.json`));
+  const exactPath = join(STATE_DIR, `todo-state-${cwdHash(cwd)}.json`);
+  if (existsSync(exactPath)) return parseTodoItems(await readJson(exactPath));
+  if (!await hasActiveSessionForCwd(cwd)) return [];
+  const fallback = await readLatestTodoSnapshot();
+  return parseTodoItems(fallback);
+}
+
+function parseTodoItems(parsed: unknown): IvyhouseStatusPanelResponse["plan"]["items"] {
   if (!isRecord(parsed) || !Array.isArray(parsed["tasks"])) return [];
   return parsed["tasks"].flatMap((task) => {
     if (!isRecord(task)) return [];
@@ -189,6 +196,27 @@ async function readTodoSnapshot(cwd: string): Promise<IvyhouseStatusPanelRespons
     if (status !== "pending" && status !== "in_progress" && status !== "completed" && status !== "deleted") return [];
     return [{ id, text: subject, status }];
   });
+}
+
+async function hasActiveSessionForCwd(cwd: string): Promise<boolean> {
+  const parsed = await readJson(join(STATE_DIR, `active-session-${cwdHash(cwd)}.json`));
+  return isRecord(parsed) && parsed["cwd"] === cwd;
+}
+
+async function readLatestTodoSnapshot(): Promise<unknown> {
+  try {
+    let latest: { path: string; updatedAt: number } | undefined;
+    for (const entry of await readdir(STATE_DIR)) {
+      if (!entry.startsWith("todo-state-") || !entry.endsWith(".json")) continue;
+      const path = join(STATE_DIR, entry);
+      const parsed = await readJson(path);
+      const updatedAt = isRecord(parsed) && typeof parsed["updatedAt"] === "number" ? parsed["updatedAt"] : (await stat(path)).mtimeMs;
+      if (latest === undefined || updatedAt > latest.updatedAt) latest = { path, updatedAt };
+    }
+    return latest === undefined ? undefined : await readJson(latest.path);
+  } catch {
+    return undefined;
+  }
 }
 
 async function readMcpServers(cwd: string): Promise<IvyhouseStatusPanelResponse["mcpServers"]> {
