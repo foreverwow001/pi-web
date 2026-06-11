@@ -1,5 +1,5 @@
 import { readFile, stat, writeFile } from "node:fs/promises";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
 import {
   AuthStorage,
   createAgentSessionFromServices,
@@ -64,6 +64,9 @@ type QueuedPromptKind = "steer" | "followUp";
 interface QueuedPrompt {
   kind: QueuedPromptKind;
   text: string;
+  displayText?: string;
+  attachments?: AttachmentSummary[];
+  images?: ImageContent[];
 }
 
 function requirePromptText(value: unknown): string {
@@ -141,7 +144,7 @@ export interface PiAgentSession {
   getUserMessagesForForking(): readonly { entryId: string; text: string }[];
   getSessionStats(): { sessionId: string; totalMessages: number; userMessages: number; assistantMessages: number; toolCalls: number; tokens: ClientSessionStatus["tokens"]; cost: number };
   getContextUsage(): ClientSessionStatus["contextUsage"] | undefined;
-  prompt(text: string, options?: { streamingBehavior?: "steer" | "followUp" }): Promise<void>;
+  prompt(text: string, options?: { streamingBehavior?: "steer" | "followUp"; images?: ImageContent[] }): Promise<void>;
   executeBash(command: string, onChunk?: (chunk: string) => void, options?: { excludeFromContext?: boolean }): Promise<{ output: string; exitCode: number | undefined; cancelled: boolean; truncated: boolean; fullOutputPath?: string }>;
   abort(): Promise<void>;
   clearQueue(): { steering: string[]; followUp: string[] };
@@ -439,9 +442,10 @@ export class PiSessionService {
   async prompt(sessionId: string, text: unknown, streamingBehavior?: unknown, attachments?: unknown): Promise<void> {
     const promptText = requirePromptText(text);
     const requestedBehavior = parsePromptStreamingBehavior(streamingBehavior);
-    const packaged = await packagePromptWithAttachments(promptText, attachments);
     await this.assertWritable(sessionId);
     const session = await this.getOrOpen(sessionId);
+    const modelSupportsImages = session.model?.input.includes("image") === true;
+    const packaged = await packagePromptWithAttachments(promptText, attachments, { sessionId, includeImages: modelSupportsImages });
     this.maybeGenerateSessionName(session, promptText);
     const isQueued = session.isStreaming || session.isCompacting;
     const behavior = isQueued ? requestedBehavior ?? "followUp" : undefined;
@@ -451,16 +455,17 @@ export class PiSessionService {
       return;
     }
     if (session.isCompacting) {
-      this.enqueuePromptDuringCompaction(session, packaged.promptText, behavior ?? "followUp");
+      this.enqueuePromptDuringCompaction(session, packaged.promptText, behavior ?? "followUp", packaged.displayText, packaged.attachments, packaged.images);
       return;
     }
-    void this.submitPrompt(session, packaged.promptText, behavior, packaged.displayText, packaged.attachments);
+    void this.submitPrompt(session, packaged.promptText, behavior, packaged.displayText, packaged.attachments, packaged.images);
   }
 
-  private submitPrompt(session: PiAgentSession, text: string, behavior: QueuedPromptKind | undefined, displayText = text, attachments: AttachmentSummary[] = []): Promise<void> {
+  private submitPrompt(session: PiAgentSession, text: string, behavior: QueuedPromptKind | undefined, displayText = text, attachments: AttachmentSummary[] = [], images: ImageContent[] = []): Promise<void> {
     this.publishActivity(session, behavior === "steer" ? "steering queued" : behavior === "followUp" ? "message queued" : "prompt accepted", "active");
     if (behavior === undefined) this.events.publish(session.sessionId, { type: "message.append", message: userTextMessage(displayText, attachments) });
-    const promptPromise = session.prompt(text, behavior === undefined ? undefined : { streamingBehavior: behavior }).catch((error: unknown) => {
+    const options = { ...(behavior === undefined ? {} : { streamingBehavior: behavior }), ...(images.length === 0 ? {} : { images }) };
+    const promptPromise = session.prompt(text, Object.keys(options).length === 0 ? undefined : options).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
       this.publishActivity(session, "error", "error", message);
       this.events.publish(session.sessionId, { type: "session.error", message });
@@ -469,9 +474,9 @@ export class PiSessionService {
     return promptPromise;
   }
 
-  private enqueuePromptDuringCompaction(session: PiAgentSession, text: string, kind: QueuedPromptKind): void {
+  private enqueuePromptDuringCompaction(session: PiAgentSession, text: string, kind: QueuedPromptKind, displayText?: string, attachments?: AttachmentSummary[], images?: ImageContent[]): void {
     const queue = this.compactionPromptQueues.get(session.sessionId) ?? [];
-    queue.push({ kind, text });
+    queue.push({ kind, text, ...(displayText === undefined ? {} : { displayText }), ...(attachments === undefined ? {} : { attachments }), ...(images === undefined ? {} : { images }) });
     this.compactionPromptQueues.set(session.sessionId, queue);
     this.publishActivity(session, "message queued during compaction", "active");
     this.publishStatus(session);
@@ -905,14 +910,14 @@ export class PiSessionService {
       const queued = this.takeCompactionPromptQueue(sessionId);
       if (queued.length === 0) return;
       this.publishStatus(session);
-      for (const prompt of queued) void this.submitPrompt(session, prompt.text, prompt.kind);
+      for (const prompt of queued) void this.submitPrompt(session, prompt.text, prompt.kind, prompt.displayText, prompt.attachments, prompt.images);
       return;
     }
 
     const prompt = this.shiftCompactionPrompt(sessionId);
     if (prompt === undefined) return;
     this.publishStatus(session);
-    const submitted = this.submitPrompt(session, prompt.text, undefined);
+    const submitted = this.submitPrompt(session, prompt.text, undefined, prompt.displayText, prompt.attachments, prompt.images);
     void submitted.finally(() => { this.scheduleCompactionQueueDrain(sessionId); });
   }
 

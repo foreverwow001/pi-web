@@ -528,7 +528,7 @@ export class ChatView extends LitElement {
       <div class="part attachment-summary">
         <strong>Attachments</strong>
         <ul>
-          ${part.attachments.map((attachment) => html`<li><span>${attachment.filename}</span><small>${attachment.kind} · ${this.formatBytes(attachment.size)} · ${attachment.status}</small></li>`)}
+          ${part.attachments.map((attachment) => html`<li><span>${attachment.filename}${attachment.warnings.length === 0 ? "" : ` — ${attachment.warnings.join("; ")}`}</span><small>${attachment.kind} · ${this.formatBytes(attachment.size)} · ${attachment.status}</small></li>`)}
         </ul>
       </div>
     `;

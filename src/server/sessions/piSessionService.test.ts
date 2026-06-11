@@ -1,8 +1,9 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import type { GlobalSessionEvent, SessionUiEvent } from "../../shared/apiTypes.js";
 import { SessionEventHub } from "../realtime/sessionEventHub.js";
 import { PiSessionService, type PiAgentSession, type PiSessionManager, type PiSessionRuntime, type PiSessionServiceDependencies } from "./piSessionService.js";
@@ -52,6 +53,21 @@ function userBranchMessage(text: string): unknown {
 
 function sessionRecord(id: string, cwd = "/workspace") {
   return { id, path: `/sessions/${id}.jsonl`, cwd, created: new Date("2026-01-01T00:00:00.000Z"), modified: new Date("2026-01-01T00:01:00.000Z"), messageCount: 0, firstMessage: "", allMessagesText: "" };
+}
+
+function testModel(input: ("text" | "image")[]): Model<Api> {
+  return {
+    id: "test-model",
+    name: "Test Model",
+    api: "openai-responses",
+    provider: "openai",
+    baseUrl: "https://example.invalid",
+    reasoning: false,
+    input,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128_000,
+    maxTokens: 4096,
+  };
 }
 
 function fakeRuntime(sessionId = "session-1", patch: Partial<TestSession> = {}) {
@@ -461,6 +477,78 @@ describe("PiSessionService", () => {
 
     expect(fake.calls.prompt).toEqual([{ text: "Build the thing", options: undefined }]);
     await service.dispose();
+  });
+
+  it("passes image attachments to vision-capable Pi models", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "pi-web-session-images-"));
+    const previousDataDir = process.env["PI_WEB_DATA_DIR"];
+    process.env["PI_WEB_DATA_DIR"] = tempDir;
+    try {
+      const fake = fakeRuntime("image-session", { model: testModel(["text", "image"]) });
+      const service = new PiSessionService(new CapturingSessionEventHub(), {
+        createAgentRuntime: runtimeCreator(fake.runtime),
+        sessionManager: sessionGateway([sessionRecord("image-session")]),
+        heartbeatIntervalMs: 60_000,
+      });
+
+      await service.prompt("image-session", "What is in this image?", undefined, [{
+        id: "img",
+        kind: "image",
+        filename: "screen.png",
+        extension: ".png",
+        mime: "image/png",
+        size: 5,
+        source: "drop",
+        warnings: [],
+        dataBase64: "aGVsbG8=",
+        extractionStatus: "ready",
+      }]);
+
+      expect(fake.calls.prompt).toHaveLength(1);
+      expect(fake.calls.prompt[0]?.text).toContain("Inline image was sent to Pi vision input.");
+      expect(fake.calls.prompt[0]?.options).toEqual({ images: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }] });
+      await service.dispose();
+    } finally {
+      if (previousDataDir === undefined) delete process.env["PI_WEB_DATA_DIR"];
+      else process.env["PI_WEB_DATA_DIR"] = previousDataDir;
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not pass image attachments to text-only Pi models", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "pi-web-session-images-"));
+    const previousDataDir = process.env["PI_WEB_DATA_DIR"];
+    process.env["PI_WEB_DATA_DIR"] = tempDir;
+    try {
+      const fake = fakeRuntime("text-only-session", { model: testModel(["text"]) });
+      const service = new PiSessionService(new CapturingSessionEventHub(), {
+        createAgentRuntime: runtimeCreator(fake.runtime),
+        sessionManager: sessionGateway([sessionRecord("text-only-session")]),
+        heartbeatIntervalMs: 60_000,
+      });
+
+      await service.prompt("text-only-session", "What is in this image?", undefined, [{
+        id: "img",
+        kind: "image",
+        filename: "screen.png",
+        extension: ".png",
+        mime: "image/png",
+        size: 5,
+        source: "drop",
+        warnings: [],
+        dataBase64: "aGVsbG8=",
+        extractionStatus: "ready",
+      }]);
+
+      expect(fake.calls.prompt).toHaveLength(1);
+      expect(fake.calls.prompt[0]?.text).toContain("Inline image was not sent because the current model does not support image input.");
+      expect(fake.calls.prompt[0]?.options).toBeUndefined();
+      await service.dispose();
+    } finally {
+      if (previousDataDir === undefined) delete process.env["PI_WEB_DATA_DIR"];
+      else process.env["PI_WEB_DATA_DIR"] = previousDataDir;
+      await rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   it("rejects malformed prompt text before opening the runtime", async () => {

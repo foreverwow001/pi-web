@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import type { ImageContent } from "@earendil-works/pi-ai";
 import mammoth from "mammoth";
 import { PDFParse } from "pdf-parse";
 import WordExtractor from "word-extractor";
@@ -19,11 +20,19 @@ import {
   type PromptAttachmentPayload,
   type PromptAttachmentSummary,
 } from "../../shared/promptAttachments.js";
+import { saveImageUpload } from "./uploadStore.js";
+
+export interface AttachmentPackagingOptions {
+  sessionId?: string;
+  includeImages?: boolean;
+  uploadRootDir?: string;
+}
 
 export interface PackagedPrompt {
   promptText: string;
   displayText: string;
   attachments: PromptAttachmentSummary[];
+  images: ImageContent[];
 }
 
 export type AttachmentSummary = PromptAttachmentSummary;
@@ -31,22 +40,23 @@ export type AttachmentSummary = PromptAttachmentSummary;
 interface ProcessedAttachment {
   summary: AttachmentSummary;
   content?: string;
+  image?: ImageContent;
 }
 
-export async function packagePromptWithAttachments(text: string, attachmentsValue: unknown): Promise<PackagedPrompt> {
+export async function packagePromptWithAttachments(text: string, attachmentsValue: unknown, options: AttachmentPackagingOptions = {}): Promise<PackagedPrompt> {
   const attachments = normalizePromptAttachments(attachmentsValue);
-  if (attachments.length === 0) return { promptText: text, displayText: text, attachments: [] };
+  if (attachments.length === 0) return { promptText: text, displayText: text, attachments: [], images: [] };
 
   const processed: ProcessedAttachment[] = [];
   let remainingChars = MAX_TOTAL_ATTACHMENT_TEXT_CHARS;
   for (const attachment of attachments) {
-    const item = await processAttachment(attachment, remainingChars);
+    const item = await processAttachment(attachment, remainingChars, options);
     processed.push(item);
     if (item.content !== undefined) remainingChars = Math.max(0, remainingChars - item.content.length);
   }
 
   const promptText = buildPromptText(text, processed);
-  return { promptText, displayText: text, attachments: processed.map((item) => item.summary) };
+  return { promptText, displayText: text, attachments: processed.map((item) => item.summary), images: processed.flatMap((item) => item.image === undefined ? [] : [item.image]) };
 }
 
 export function normalizePromptAttachments(value: unknown): PromptAttachmentPayload[] {
@@ -78,7 +88,7 @@ function normalizePromptAttachment(value: unknown): PromptAttachmentPayload {
   return { id: stringValue(value["id"], `att-${filename}`), kind, filename, extension, mime, size, source: "drop", warnings, ...(text === undefined ? {} : { text }), ...(dataBase64 === undefined ? {} : { dataBase64 }), ...(dataUrl === undefined ? {} : { dataUrl }), ...(extractionStatus === undefined ? {} : { extractionStatus }), ...(reason === undefined ? {} : { reason }) };
 }
 
-async function processAttachment(attachment: PromptAttachmentPayload, remainingChars: number): Promise<ProcessedAttachment> {
+async function processAttachment(attachment: PromptAttachmentPayload, remainingChars: number, options: AttachmentPackagingOptions): Promise<ProcessedAttachment> {
   const warnings = [...attachment.warnings];
   if (isRiskyAttachmentFilename(attachment.filename)) warnings.push("Sensitive filename: content was not attached.");
   if (!isSupportedAttachmentExtension(attachment.extension)) return metadataOnly(attachment, warnings, "Unsupported file type.");
@@ -86,7 +96,7 @@ async function processAttachment(attachment: PromptAttachmentPayload, remainingC
 
   try {
     if (isTextAttachmentExtension(attachment.extension)) return processTextAttachment(attachment, warnings, remainingChars);
-    if (isImageAttachmentExtension(attachment.extension)) return processImageAttachment(attachment, warnings);
+    if (isImageAttachmentExtension(attachment.extension)) return await processImageAttachment(attachment, warnings, options);
     if (isDocumentAttachmentExtension(attachment.extension)) return await processDocumentAttachment(attachment, warnings, remainingChars);
     return metadataOnly(attachment, warnings, "Unsupported file type.");
   } catch (error) {
@@ -102,10 +112,21 @@ function processTextAttachment(attachment: PromptAttachmentPayload, warnings: st
   return includeText(attachment, warnings, attachment.text, remainingChars);
 }
 
-function processImageAttachment(attachment: PromptAttachmentPayload, warnings: string[]): ProcessedAttachment {
+async function processImageAttachment(attachment: PromptAttachmentPayload, warnings: string[], options: AttachmentPackagingOptions): Promise<ProcessedAttachment> {
   if (attachment.size > MAX_IMAGE_ATTACHMENT_BYTES) return metadataOnly(attachment, [...warnings, "Image exceeds size limit."], "Image exceeds size limit.");
+  const buffer = decodeAttachmentBuffer(attachment);
+  if (buffer === undefined) return metadataOnly(attachment, warnings, "No image content supplied.");
+  const saved = options.sessionId === undefined ? undefined : await saveImageUpload(options.sessionId, attachment, buffer, options.uploadRootDir === undefined ? {} : { rootDir: options.uploadRootDir });
+  const imageSupported = options.includeImages === true;
+  const summaryWarnings = imageSupported ? warnings : [...warnings, "Current model does not support image input; image content was not sent inline."];
+  const content = [
+    ...(saved === undefined ? [] : [`Saved image path: ${saved.absolutePath}`]),
+    imageSupported ? "Inline image was sent to Pi vision input." : "Inline image was not sent because the current model does not support image input.",
+  ].join("\n");
   return {
-    summary: { filename: attachment.filename, kind: "image", mime: attachment.mime, size: attachment.size, status: "metadata-only", warnings: [...warnings, "Image preview is available in PI WEB; Pi text prompt receives metadata only."] },
+    summary: { filename: attachment.filename, kind: "image", mime: attachment.mime, size: attachment.size, status: imageSupported ? "included" : "metadata-only", warnings: summaryWarnings },
+    content,
+    ...(imageSupported ? { image: { type: "image" as const, data: buffer.toString("base64"), mimeType: attachment.mime } } : {}),
   };
 }
 
