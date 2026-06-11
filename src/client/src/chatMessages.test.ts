@@ -90,6 +90,21 @@ describe("chat message normalization", () => {
     ]);
   });
 
+  it("renders packaged array content as user text plus attachment summary and hides inline image marker", () => {
+    expect(normalizeMessage({
+      role: "user",
+      content: [
+        { type: "text", text: "<pi-web-user-message>\nReview image\n</pi-web-user-message>\n\n<pi-web-attachments>\n<attachment filename=\"screen.png\" kind=\"image\" mime=\"image/png\" size=\"20\" status=\"included\">\nSaved image path: /tmp/screen.png\nInline image was sent to Pi vision input.\n</attachment>\n</pi-web-attachments>" },
+        { type: "image", data: "abc", mimeType: "image/png" },
+      ],
+    })).toEqual([
+      { role: "user", parts: [
+        { type: "text", text: "Review image" },
+        { type: "attachmentSummary", attachments: [{ filename: "screen.png", kind: "image", mime: "image/png", size: 20, status: "included", warnings: [] }] },
+      ] },
+    ]);
+  });
+
   it("renders optimistic attachment summaries from message metadata", () => {
     expect(normalizeMessage({
       role: "user",

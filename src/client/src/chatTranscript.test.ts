@@ -177,6 +177,25 @@ describe("applyTranscriptEvent", () => {
     ]);
   });
 
+  it("replaces optimistic attachment messages with finalized packaged image prompts", () => {
+    const optimistic: ChatLine = { role: "user", parts: [
+      { type: "text", text: "Review image" },
+      { type: "attachmentSummary", attachments: [{ filename: "screen.png", kind: "image", mime: "image/png", size: 20, status: "included", warnings: [] }] },
+    ] };
+
+    expect(applyTranscriptEvent([optimistic], {
+      type: "message.end",
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: "<pi-web-user-message>\nReview image\n</pi-web-user-message>\n\n<pi-web-attachments>\n<attachment filename=\"screen.png\" kind=\"image\" mime=\"image/png\" size=\"20\" status=\"included\">\nSaved image path: /tmp/screen.png\nInline image was sent to Pi vision input.\n</attachment>\n</pi-web-attachments>" },
+          { type: "image", data: "abc", mimeType: "image/png" },
+        ],
+        timestamp: "2026-05-09T12:00:00.000Z",
+      },
+    })).toEqual([{ ...optimistic, meta: { timestamp: "2026-05-09T12:00:00.000Z" } }]);
+  });
+
   it("replaces an optimistic user message when the finalized text matches", () => {
     const messages = [textMessage("user", "sent prompt")];
 

@@ -151,6 +151,18 @@ function normalizeContent(content: unknown, message: unknown): ChatPart[] {
   }
   if (!Array.isArray(content)) return objectFallback(content);
 
+  const packagedTextPart = content
+    .map((part) => typeof part === "object" && part !== null && getString(part, "type") === "text" ? getString(part, "text") : undefined)
+    .find((text): text is string => text !== undefined && parsePiWebAttachmentPackage(text) !== undefined);
+  const packaged = packagedTextPart === undefined ? undefined : parsePiWebAttachmentPackage(packagedTextPart);
+  if (packaged !== undefined) {
+    const attachments = normalizeAttachmentSummaries(getProperty(message, "attachments")) ?? packaged.attachments;
+    return [
+      ...(packaged.text !== "" ? [{ type: "text" as const, text: packaged.text }] : []),
+      ...(attachments.length > 0 ? [{ type: "attachmentSummary" as const, attachments }] : []),
+    ];
+  }
+
   return content.flatMap((part): ChatPart[] => {
     const type = getString(part, "type");
     const text = getString(part, "text");
