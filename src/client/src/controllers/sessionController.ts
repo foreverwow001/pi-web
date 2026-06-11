@@ -10,6 +10,7 @@ import { SessionSocket, type GlobalSessionEvent, type SessionUiEvent } from "../
 import { isSessionActive } from "../../../shared/activity";
 import { InMemorySessionSelectionMemory, markSessionArchived, markSessionsArchived, selectPreferredSession, selectionAfterArchivingSession, selectionAfterArchivingSessions, shouldDeselectAfterArchivedCollapse, type SessionSelectionMemory } from "./sessionSelection";
 import { selectedMachineId, type GetState, type SetState, type UpdateUrl } from "./types";
+import type { PromptAttachmentPayload } from "../../../shared/promptAttachments";
 
 const MESSAGE_PAGE_SIZE = 100;
 
@@ -167,14 +168,14 @@ export class SessionController {
     }
   }
 
-  async send(text: string, streamingBehavior?: "steer" | "followUp") {
+  async send(text: string, attachments: PromptAttachmentPayload[] = [], streamingBehavior?: "steer" | "followUp") {
     const trimmed = text.trim();
-    if (trimmed.startsWith("/")) return this.runCommand(text);
-    if (isShellInput(text)) return this.runShell(text);
+    if (attachments.length === 0 && trimmed.startsWith("/")) return this.runCommand(text);
+    if (attachments.length === 0 && isShellInput(text)) return this.runShell(text);
     const session = this.getState().selectedSession;
     if (!session || session.archived === true) return;
     try {
-      await this.api.prompt(session.id, text, streamingBehavior, selectedMachineId(this.getState()));
+      await this.api.prompt(session.id, text, attachments, streamingBehavior, selectedMachineId(this.getState()));
       this.markCachedNewSessionPersisted(session);
     } catch (error) {
       this.setState({ error: String(error) });

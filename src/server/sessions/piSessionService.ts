@@ -27,6 +27,7 @@ import type { AuthChange } from "./authService.js";
 import { fallbackSessionName, generateShortSessionName } from "./sessionNameGenerator.js";
 import { computeEditPreview, type EditPreviewResult } from "./editPreview.js";
 import type { WorkspaceActivityService } from "../activity/workspaceActivityService.js";
+import { packagePromptWithAttachments, type AttachmentSummary } from "../attachments/attachmentProcessor.js";
 
 function noop(): void {
   // Intentionally empty default unsubscribe callback.
@@ -435,29 +436,30 @@ export class PiSessionService {
     return commands.sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  async prompt(sessionId: string, text: unknown, streamingBehavior?: unknown): Promise<void> {
+  async prompt(sessionId: string, text: unknown, streamingBehavior?: unknown, attachments?: unknown): Promise<void> {
     const promptText = requirePromptText(text);
     const requestedBehavior = parsePromptStreamingBehavior(streamingBehavior);
+    const packaged = await packagePromptWithAttachments(promptText, attachments);
     await this.assertWritable(sessionId);
     const session = await this.getOrOpen(sessionId);
     this.maybeGenerateSessionName(session, promptText);
     const isQueued = session.isStreaming || session.isCompacting;
     const behavior = isQueued ? requestedBehavior ?? "followUp" : undefined;
-    if (isQueued && this.hasQueuedMessageText(session, promptText)) {
+    if (isQueued && this.hasQueuedMessageText(session, packaged.promptText)) {
       this.publishActivity(session, "duplicate queued message ignored", "active");
       this.publishStatus(session);
       return;
     }
     if (session.isCompacting) {
-      this.enqueuePromptDuringCompaction(session, promptText, behavior ?? "followUp");
+      this.enqueuePromptDuringCompaction(session, packaged.promptText, behavior ?? "followUp");
       return;
     }
-    void this.submitPrompt(session, promptText, behavior);
+    void this.submitPrompt(session, packaged.promptText, behavior, packaged.displayText, packaged.attachments);
   }
 
-  private submitPrompt(session: PiAgentSession, text: string, behavior: QueuedPromptKind | undefined): Promise<void> {
+  private submitPrompt(session: PiAgentSession, text: string, behavior: QueuedPromptKind | undefined, displayText = text, attachments: AttachmentSummary[] = []): Promise<void> {
     this.publishActivity(session, behavior === "steer" ? "steering queued" : behavior === "followUp" ? "message queued" : "prompt accepted", "active");
-    if (behavior === undefined) this.events.publish(session.sessionId, { type: "message.append", message: userTextMessage(text) });
+    if (behavior === undefined) this.events.publish(session.sessionId, { type: "message.append", message: userTextMessage(displayText, attachments) });
     const promptPromise = session.prompt(text, behavior === undefined ? undefined : { streamingBehavior: behavior }).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
       this.publishActivity(session, "error", "error", message);
@@ -1321,8 +1323,8 @@ function queuedMessagesFromSession(session: PiAgentSession, extraQueuedMessages:
   ];
 }
 
-function userTextMessage(text: string): { role: "user"; content: string } {
-  return { role: "user", content: text };
+function userTextMessage(text: string, attachments: AttachmentSummary[] = []): { role: "user"; content: string; attachments?: AttachmentSummary[] } {
+  return attachments.length === 0 ? { role: "user", content: text } : { role: "user", content: text, attachments };
 }
 
 function stringValue(value: unknown): string {

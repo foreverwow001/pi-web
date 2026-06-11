@@ -1,4 +1,5 @@
 import type { ChatLine, ChatPart, ToolExecutionPart, ToolPreview } from "./components/shared";
+import type { PromptAttachmentSummary } from "../../shared/promptAttachments";
 
 export function normalizeMessages(messages: unknown[]): ChatLine[] {
   return coalesceToolExecutions(messages.flatMap(normalizeMessage)).filter((message) => message.parts.length > 0);
@@ -139,7 +140,15 @@ function normalizeRole(role: unknown): ChatLine["role"] {
 }
 
 function normalizeContent(content: unknown, message: unknown): ChatPart[] {
-  if (typeof content === "string") return content !== "" ? [{ type: "text", text: content }] : [];
+  if (typeof content === "string") {
+    const packaged = parsePiWebAttachmentPackage(content);
+    const text = packaged?.text ?? content;
+    const attachments = normalizeAttachmentSummaries(getProperty(message, "attachments")) ?? packaged?.attachments ?? [];
+    return [
+      ...(text !== "" ? [{ type: "text" as const, text }] : []),
+      ...(attachments.length > 0 ? [{ type: "attachmentSummary" as const, attachments }] : []),
+    ];
+  }
   if (!Array.isArray(content)) return objectFallback(content);
 
   return content.flatMap((part): ChatPart[] => {
@@ -163,6 +172,60 @@ function normalizeContent(content: unknown, message: unknown): ChatPart[] {
   }).map((part) => part.type === "text" && getString(message, "role") === "toolResult"
     ? toolResultPartFromText(part.text, message)
     : part);
+}
+
+function parsePiWebAttachmentPackage(text: string): { text: string; attachments: PromptAttachmentSummary[] } | undefined {
+  const messageMatch = /<pi-web-user-message>\n([\s\S]*?)\n<\/pi-web-user-message>/.exec(text);
+  const attachmentsMatch = /<pi-web-attachments>\n([\s\S]*?)\n<\/pi-web-attachments>/.exec(text);
+  if (messageMatch === null || attachmentsMatch === null) return undefined;
+  const attachmentText = attachmentsMatch[1] ?? "";
+  const attachments = [...attachmentText.matchAll(/<attachment\s+([^>]+)>/g)].map((match): PromptAttachmentSummary | undefined => {
+    const attrs = parseAttributes(match[1] ?? "");
+    const filename = attrs.get("filename") ?? "attachment";
+    const kind = normalizeAttachmentKind(attrs.get("kind"));
+    const mime = attrs.get("mime") ?? "application/octet-stream";
+    const size = Number(attrs.get("size") ?? 0);
+    const status = normalizeAttachmentStatus(attrs.get("status"));
+    return { filename, kind, mime, size: Number.isFinite(size) ? size : 0, status, warnings: [] };
+  }).filter((item): item is PromptAttachmentSummary => item !== undefined);
+  return { text: (messageMatch[1] ?? "").trim(), attachments };
+}
+
+function normalizeAttachmentSummaries(value: unknown): PromptAttachmentSummary[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const summaries = value.map((item): PromptAttachmentSummary | undefined => {
+    if (!isRecord(item)) return undefined;
+    const filename = getString(item, "filename") ?? "attachment";
+    const rawSize = getProperty(item, "size");
+    const rawWarnings = getProperty(item, "warnings");
+    return {
+      filename,
+      kind: normalizeAttachmentKind(getString(item, "kind")),
+      mime: getString(item, "mime") ?? "application/octet-stream",
+      size: typeof rawSize === "number" ? rawSize : 0,
+      status: normalizeAttachmentStatus(getString(item, "status")),
+      warnings: Array.isArray(rawWarnings) ? rawWarnings.filter((entry): entry is string => typeof entry === "string") : [],
+    };
+  }).filter((item): item is PromptAttachmentSummary => item !== undefined);
+  return summaries.length === 0 ? undefined : summaries;
+}
+
+function parseAttributes(value: string): Map<string, string> {
+  const attrs = new Map<string, string>();
+  for (const match of value.matchAll(/([a-zA-Z]+)="([^"]*)"/g)) attrs.set(match[1] ?? "", unescapeAttribute(match[2] ?? ""));
+  return attrs;
+}
+
+function unescapeAttribute(value: string): string {
+  return value.replace(/&quot;/g, "\"").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+}
+
+function normalizeAttachmentKind(value: unknown): PromptAttachmentSummary["kind"] {
+  return value === "text" || value === "document" || value === "image" || value === "unsupported" ? value : "unsupported";
+}
+
+function normalizeAttachmentStatus(value: unknown): PromptAttachmentSummary["status"] {
+  return value === "included" || value === "metadata-only" || value === "failed" || value === "truncated" ? value : "metadata-only";
 }
 
 function toolResultPartFromText(text: string, message: unknown): Extract<ChatPart, { type: "toolResult" }> {

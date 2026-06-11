@@ -77,6 +77,31 @@ describe("chat message normalization", () => {
       textMessage("bash", "excluded from context\n\n$ npm test\n\nok\n\nexit 0\n\noutput truncated\n\nfull output: /tmp/out.log"),
     ]);
   });
+
+  it("renders pi-web attachment package as user text plus attachment summary", () => {
+    expect(normalizeMessage({
+      role: "user",
+      content: "<pi-web-user-message>\nReview this\n</pi-web-user-message>\n\n<pi-web-attachments>\n<attachment filename=\"notes.md\" kind=\"text\" mime=\"text/markdown\" size=\"11\" status=\"included\">\nhello\n</attachment>\n</pi-web-attachments>",
+    })).toEqual([
+      { role: "user", parts: [
+        { type: "text", text: "Review this" },
+        { type: "attachmentSummary", attachments: [{ filename: "notes.md", kind: "text", mime: "text/markdown", size: 11, status: "included", warnings: [] }] },
+      ] },
+    ]);
+  });
+
+  it("renders optimistic attachment summaries from message metadata", () => {
+    expect(normalizeMessage({
+      role: "user",
+      content: "Review this",
+      attachments: [{ filename: "screen.png", kind: "image", mime: "image/png", size: 20, status: "metadata-only", warnings: ["metadata only"] }],
+    })).toEqual([
+      { role: "user", parts: [
+        { type: "text", text: "Review this" },
+        { type: "attachmentSummary", attachments: [{ filename: "screen.png", kind: "image", mime: "image/png", size: 20, status: "metadata-only", warnings: ["metadata only"] }] },
+      ] },
+    ]);
+  });
 });
 
 describe("appendText", () => {

@@ -1,4 +1,5 @@
 import { css } from "lit";
+import type { PromptAttachmentSummary } from "../../../shared/promptAttachments";
 
 export interface ToolPreview {
   diff?: string;
@@ -27,6 +28,7 @@ export type ChatPart =
   | { type: "toolCall"; toolCallId?: string; toolName: string; summary: string; args?: unknown }
   | ToolExecutionPart
   | { type: "toolResult"; toolCallId?: string; toolName: string; text: string; isError: boolean; content?: unknown; details?: unknown }
+  | { type: "attachmentSummary"; attachments: PromptAttachmentSummary[] }
   | { type: "empty" };
 
 export interface ChatLine {
@@ -270,7 +272,8 @@ export const listStyles = css`
 export const chatStyles = css`
   :host { position: relative; z-index: 0; display: flex; flex-direction: column; min-height: 0; overflow: hidden; color: var(--pi-text); font: 14px system-ui, sans-serif; }
   .chat-wrap { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; }
-  .chat { height: 100%; min-height: 0; overflow: auto; overflow-anchor: none; padding: 26px 16px 64px; box-sizing: border-box; }
+  .chat { height: 100%; min-height: 0; overflow: auto; overflow-anchor: none; padding: 26px 64px 64px 16px; box-sizing: border-box; }
+  @media (max-width: 760px) { .chat { padding-right: 46px; } }
   .scroll-marker { display: block; height: 0; overflow: hidden; pointer-events: none; }
   .activity-dock { position: absolute; left: 16px; right: 16px; bottom: 12px; z-index: 20; display: flex; align-items: center; gap: 8px; min-width: 0; box-sizing: border-box; border: 1px solid var(--pi-border); border-radius: 999px; background: var(--pi-bg-overlay); color: var(--pi-muted); padding: 8px 12px; font-size: 13px; pointer-events: none; box-shadow: 0 8px 28px var(--pi-shadow); backdrop-filter: blur(6px); }
   .activity-dock.active { border-color: var(--pi-success-border); color: var(--pi-success); background: var(--pi-success-bg-overlay); }
@@ -344,7 +347,13 @@ export const chatStyles = css`
   .summary { color: var(--pi-muted); margin-left: 6px; }
   .part:is(details) { border-top: 1px solid var(--pi-border); padding-top: 8px; }
   .part > formatted-text { display: block; max-width: 100%; min-width: 0; overflow: visible; }
-  .skill-invocation, .skill-read { border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); padding: 8px 10px; }
+  .skill-invocation, .skill-read, .attachment-summary { border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); padding: 8px 10px; }
+  .attachment-summary strong { color: var(--pi-accent); }
+  .attachment-summary ul { display: grid; gap: 5px; margin: 7px 0 0; padding: 0; list-style: none; }
+  .attachment-summary li { min-width: 0; display: flex; justify-content: space-between; gap: 10px; border-top: 1px solid var(--pi-border-muted); padding-top: 5px; }
+  .attachment-summary li:first-child { border-top: 0; padding-top: 0; }
+  .attachment-summary span, .attachment-summary small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .attachment-summary small { flex: 0 1 auto; color: var(--pi-muted); }
   .skill-invocation > summary, .skill-read > strong { color: var(--pi-purple); }
   .skill-invocation > small, .skill-read > small { display: block; margin: 6px 0 0; color: var(--pi-muted); }
   summary { cursor: pointer; color: var(--pi-muted); }
@@ -442,7 +451,9 @@ export const promptEditorStyles = css`
   :host { position: relative; z-index: 5; display: block; color: var(--pi-text); font: 14px system-ui, sans-serif; }
   footer { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 12px; border-top: 1px solid var(--pi-border); }
   footer.shell-mode { border-top-color: var(--pi-success); background: var(--pi-success-bg); }
+  footer.dragging-file { background: color-mix(in srgb, var(--pi-accent) 8%, transparent); }
   .editor-wrap { position: relative; min-width: 0; }
+  .drop-overlay { position: absolute; inset: 0; z-index: 12; display: grid; place-items: center; border: 2px dashed var(--pi-accent); border-radius: 10px; background: color-mix(in srgb, var(--pi-bg) 78%, transparent); color: var(--pi-accent); font-weight: 700; pointer-events: none; }
   .actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: nowrap; white-space: nowrap; }
   .compact-status { display: flex; min-width: 0; align-items: center; gap: 6px; color: var(--pi-muted); font-size: 12px; flex: 1 1 0; }
   .compact-status > button { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }

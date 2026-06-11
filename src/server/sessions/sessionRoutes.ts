@@ -5,6 +5,7 @@ import type { PiSessionService } from "./piSessionService.js";
 interface PromptRequestBody {
   text?: unknown;
   streamingBehavior?: unknown;
+  attachments?: unknown;
 }
 
 export function registerSessionRoutes(app: FastifyInstance, sessions: PiSessionService, eventHub: SessionEventHub, prefix = ""): void {
@@ -96,7 +97,7 @@ export function registerSessionRoutes(app: FastifyInstance, sessions: PiSessionS
 
   app.post<{ Params: { sessionId: string }; Body: PromptRequestBody | undefined }>(`${prefix}/sessions/:sessionId/prompt`, async (request, reply) => {
     try {
-      await sessions.prompt(request.params.sessionId, request.body?.text, request.body?.streamingBehavior);
+      await sessions.prompt(request.params.sessionId, request.body?.text, request.body?.streamingBehavior, request.body?.attachments);
       return { accepted: true };
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });

@@ -12,6 +12,8 @@ import { chatStyles } from "./shared";
 import "./ConversationMeter";
 import "./FormattedText";
 import "./ToolExecutionView";
+import "./UserPromptTimeline";
+import type { UserPromptTimelineItem } from "./UserPromptTimeline";
 
 const shortTimestampFormatter = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 const fullTimestampFormatter = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium" });
@@ -161,6 +163,7 @@ export class ChatView extends LitElement {
     return html`
       <div class="chat-wrap">
         ${this.renderConversationRail()}
+        ${this.renderUserPromptTimeline()}
         <div class="chat" @scroll=${() => { this.onScroll(); }} @wheel=${(event: WheelEvent) => { this.onWheel(event); }} @touchstart=${(event: TouchEvent) => { this.onTouchStart(event); }} @touchmove=${(event: TouchEvent) => { this.onTouchMove(event); }}>
           ${this.renderHistoryBoundary()}
           ${repeat(
@@ -277,6 +280,42 @@ export class ChatView extends LitElement {
     const position = this.conversationPositionPercent(total);
     const loadedPercent = this.hasMore ? clampPercent((this.messages.length / total) * 100) : 100;
     return html`<conversation-meter .positionPercent=${position} .loadedPercent=${loadedPercent}></conversation-meter>`;
+  }
+
+  private renderUserPromptTimeline() {
+    const items = this.userPromptTimelineItems();
+    if (items.length === 0) return null;
+    return html`<user-prompt-timeline .items=${items} .onJump=${(index: number) => { this.jumpToMessage(index); }}></user-prompt-timeline>`;
+  }
+
+  private userPromptTimelineItems(): UserPromptTimelineItem[] {
+    const userIndices = this.messages
+      .map((message, offset) => ({ message, index: this.messageStart + offset }))
+      .filter(({ message }) => message.role === "user" && this.firstTextPart(message) !== "");
+    if (userIndices.length === 0) return [];
+
+    const currentIndex = this.currentConversationIndex ?? (this.pinnedToBottom ? this.messageStart + this.messages.length - 1 : this.messageStart);
+    let activeIndex = userIndices[0]?.index ?? 0;
+    for (const item of userIndices) {
+      if (item.index <= currentIndex) activeIndex = item.index;
+      else break;
+    }
+
+    return userIndices.map(({ message, index }) => ({
+      id: `user:${String(index)}`,
+      index,
+      text: this.firstTextPart(message),
+      active: index === activeIndex,
+    }));
+  }
+
+  private firstTextPart(message: ChatLine): string {
+    return message.parts.find((part): part is Extract<ChatPart, { type: "text" }> => part.type === "text")?.text.trim() ?? "";
+  }
+
+  private jumpToMessage(index: number): void {
+    const anchor = this.chat?.querySelector<HTMLElement>(`[data-scroll-anchor-id="${this.messageAnchorKey(index)}"]`);
+    anchor?.scrollIntoView({ block: "start", behavior: "smooth" });
   }
 
   private conversationDisplayTotal(): number {
@@ -485,7 +524,22 @@ export class ChatView extends LitElement {
         <formatted-text .text=${part.text}></formatted-text>
       </details>
     `;
+    if (part.type === "attachmentSummary") return html`
+      <div class="part attachment-summary">
+        <strong>Attachments</strong>
+        <ul>
+          ${part.attachments.map((attachment) => html`<li><span>${attachment.filename}</span><small>${attachment.kind} · ${this.formatBytes(attachment.size)} · ${attachment.status}</small></li>`)}
+        </ul>
+      </div>
+    `;
     return null;
+  }
+
+  private formatBytes(bytes: number): string {
+    if (!Number.isFinite(bytes) || bytes < 0) return "unknown size";
+    if (bytes < 1024) return `${String(bytes)} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
 
   private onGroupToggle(key: string, event: Event, defaultOpen: boolean) {

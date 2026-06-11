@@ -77,6 +77,10 @@ export const workspacesApi = {
   workspaceFile: (projectId: string, workspaceId: string, path: string, machineId = "local") => request(`${machinePrefix(machineId)}/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}/file?path=${encodeURIComponent(path)}`, parseFileContentResponse),
 };
 
+function normalizeStreamingBehavior(value: unknown): "steer" | "followUp" | undefined {
+  return value === "steer" || value === "followUp" ? value : undefined;
+}
+
 export const sessionsApi = {
   sessions: (cwd: string, machineId = "local") => request(`${machinePrefix(machineId)}/sessions?cwd=${encodeURIComponent(cwd)}`, arrayOf(parseSessionInfo)),
   startSession: (cwd: string, machineId = "local") => request(`${machinePrefix(machineId)}/sessions`, parseSessionInfo, { method: "POST", body: JSON.stringify({ cwd }) }),
@@ -89,7 +93,16 @@ export const sessionsApi = {
   setThinkingLevel: (sessionId: string, level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh", machineId = "local") => request(`${machinePrefix(machineId)}/sessions/${sessionId}/thinking-level`, parseSessionStatus, { method: "POST", body: JSON.stringify({ level }) }),
   cycleThinkingLevel: (sessionId: string, machineId = "local") => request(`${machinePrefix(machineId)}/sessions/${sessionId}/thinking-level/cycle`, parseSessionStatus, { method: "POST" }),
   commands: (sessionId: string, machineId = "local") => request(`${machinePrefix(machineId)}/sessions/${sessionId}/commands`, arrayOf(parseSlashCommand)),
-  prompt: (sessionId: string, text: string, streamingBehavior?: "steer" | "followUp", machineId = "local") => request(`${machinePrefix(machineId)}/sessions/${sessionId}/prompt`, parseAccepted, { method: "POST", body: JSON.stringify(streamingBehavior === undefined ? { text } : { text, streamingBehavior }) }),
+  prompt: (sessionId: string, text: string, attachmentsOrStreaming: unknown[] | string = [], streamingOrMachine?: string, maybeMachineId = "local") => {
+    const attachments = Array.isArray(attachmentsOrStreaming) ? attachmentsOrStreaming : [];
+    const streamingBehavior = Array.isArray(attachmentsOrStreaming)
+      ? normalizeStreamingBehavior(streamingOrMachine)
+      : normalizeStreamingBehavior(attachmentsOrStreaming);
+    const machineId = Array.isArray(attachmentsOrStreaming)
+      ? maybeMachineId
+      : typeof streamingOrMachine === "string" && normalizeStreamingBehavior(streamingOrMachine) === undefined ? streamingOrMachine : maybeMachineId;
+    return request(`${machinePrefix(machineId)}/sessions/${sessionId}/prompt`, parseAccepted, { method: "POST", body: JSON.stringify({ text, ...(attachments.length === 0 ? {} : { attachments }), ...(streamingBehavior === undefined ? {} : { streamingBehavior }) }) });
+  },
   shell: (sessionId: string, text: string, machineId = "local") => request(`${machinePrefix(machineId)}/sessions/${sessionId}/shell`, parseAccepted, { method: "POST", body: JSON.stringify({ text }) }),
   runCommand: (sessionId: string, text: string, machineId = "local") => request(`${machinePrefix(machineId)}/sessions/${sessionId}/commands/run`, parseCommandResult, { method: "POST", body: JSON.stringify({ text }) }),
   respondToCommand: (sessionId: string, requestId: string, value: string, machineId = "local") => request(`${machinePrefix(machineId)}/sessions/${sessionId}/commands/respond`, parseCommandResult, { method: "POST", body: JSON.stringify({ requestId, value }) }),
