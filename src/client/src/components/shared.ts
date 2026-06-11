@@ -1,4 +1,5 @@
 import { css } from "lit";
+import type { RoundUsageSnapshot } from "../../../shared/apiTypes";
 import type { PromptAttachmentSummary } from "../../../shared/promptAttachments";
 
 export interface ToolPreview {
@@ -29,6 +30,7 @@ export type ChatPart =
   | ToolExecutionPart
   | { type: "toolResult"; toolCallId?: string; toolName: string; text: string; isError: boolean; content?: unknown; details?: unknown }
   | { type: "attachmentSummary"; attachments: PromptAttachmentSummary[] }
+  | { type: "roundUsage"; usage: RoundUsageSnapshot }
   | { type: "empty" };
 
 export interface ChatLine {
@@ -354,6 +356,11 @@ export const chatStyles = css`
   .attachment-summary li:first-child { border-top: 0; padding-top: 0; }
   .attachment-summary span, .attachment-summary small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .attachment-summary small { flex: 0 1 auto; color: var(--pi-muted); }
+  .round-usage { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 12px; border-top: 1px solid var(--pi-border-muted); padding-top: 8px; color: var(--pi-muted); }
+  .round-usage-chip { display: inline-flex; align-items: baseline; gap: 5px; border: 1px solid var(--pi-border-muted); border-radius: 999px; background: var(--pi-bg); color: var(--pi-text); padding: 3px 8px; font: 12px system-ui, sans-serif; }
+  .round-usage-chip::before { content: attr(data-label); color: var(--pi-muted); font-size: 10px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; }
+  .round-usage-chip.child { border-color: var(--pi-purple-border); background: var(--pi-purple-surface); }
+  .round-usage-chip.partial { border-color: var(--pi-warning-border); background: var(--pi-warning-surface); color: var(--pi-warning); }
   .skill-invocation > summary, .skill-read > strong { color: var(--pi-purple); }
   .skill-invocation > small, .skill-read > small { display: block; margin: 6px 0 0; color: var(--pi-muted); }
   summary { cursor: pointer; color: var(--pi-muted); }

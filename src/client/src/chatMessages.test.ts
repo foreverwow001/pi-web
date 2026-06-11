@@ -105,6 +105,24 @@ describe("chat message normalization", () => {
     ]);
   });
 
+  it("normalizes persisted round usage on assistant history messages", () => {
+    const roundUsage = {
+      roundId: "round-1",
+      sessionId: "session-1",
+      status: "complete",
+      parent: { tokens: { input: 10, output: 5, cacheRead: 2, cacheWrite: 0, total: 17 }, cost: 0.01 },
+      child: { tokens: { input: 20, output: 10, cacheRead: 0, cacheWrite: 0, total: 30 }, cost: 0.02 },
+      total: { tokens: { input: 30, output: 15, cacheRead: 2, cacheWrite: 0, total: 47 }, cost: 0.03 },
+      childRuns: 1,
+      childUsagePending: false,
+      children: [{ role: "qa-reviewer", tokens: { input: 20, output: 10, cacheRead: 0, cacheWrite: 0, total: 30 }, cost: 0.02, hasUsage: true }],
+    };
+
+    expect(normalizeMessage({ role: "assistant", content: "answer", roundUsage })).toEqual([
+      { role: "assistant", parts: [{ type: "text", text: "answer" }, { type: "roundUsage", usage: roundUsage }] },
+    ]);
+  });
+
   it("renders optimistic attachment summaries from message metadata", () => {
     expect(normalizeMessage({
       role: "user",

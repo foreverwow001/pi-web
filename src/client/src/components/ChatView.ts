@@ -7,6 +7,7 @@ import { capturePrependScrollAnchor, PREPEND_RESTORE_SETTLE_FRAMES, restorePrepe
 import { shouldRequestEarlierMessages } from "../chatHistoryLoading";
 import { ChatScrollController, distanceFromScrollBottom, findFirstVisibleArticle, isNearScrollBottom, type ChatAnchorScrollPosition, type ChatScrollRestoreResult } from "../chatScrollPosition";
 import type { SessionActivity, SessionStatus } from "../api";
+import { formatCost, formatTokenCount } from "../utils/format";
 import type { ChatLine, ChatPart } from "./shared";
 import { chatStyles } from "./shared";
 import "./ConversationMeter";
@@ -532,7 +533,27 @@ export class ChatView extends LitElement {
         </ul>
       </div>
     `;
+    if (part.type === "roundUsage") return html`
+      <div class="part round-usage" title=${this.roundUsageTitle(part.usage)}>
+        <span class="round-usage-chip" data-label="input">${formatTokenCount(part.usage.total.tokens.input)}</span>
+        <span class="round-usage-chip" data-label="output">${formatTokenCount(part.usage.total.tokens.output)}</span>
+        <span class="round-usage-chip" data-label="cache read">${formatTokenCount(part.usage.total.tokens.cacheRead)}</span>
+        <span class="round-usage-chip" data-label="cache write">${formatTokenCount(part.usage.total.tokens.cacheWrite)}</span>
+        ${part.usage.childRuns > 0 ? html`<span class="round-usage-chip child" data-label="child">${formatTokenCount(part.usage.child.tokens.total)} · ${part.usage.childRuns}</span>` : null}
+        <span class="round-usage-chip" data-label="total">${formatTokenCount(part.usage.total.tokens.total)}</span>
+        <span class="round-usage-chip" data-label="cost">${formatCost(part.usage.total.cost)}</span>
+        ${part.usage.status === "partial" ? html`<span class="round-usage-chip partial" data-label="status">partial</span>` : null}
+      </div>
+    `;
     return null;
+  }
+
+  private roundUsageTitle(usage: Extract<ChatPart, { type: "roundUsage" }>["usage"]): string {
+    const parent = `Parent: input ${formatTokenCount(usage.parent.tokens.input)} / output ${formatTokenCount(usage.parent.tokens.output)} / total ${formatTokenCount(usage.parent.tokens.total)}`;
+    const child = usage.children.length === 0
+      ? "Child: none"
+      : usage.children.map((item, index) => `${item.role ?? `child ${String(index + 1)}`}: ${formatTokenCount(item.tokens.total)}${item.hasUsage ? "" : " (no usage reported)"}`).join("; ");
+    return `${parent}\n${child}`;
   }
 
   private formatBytes(bytes: number): string {

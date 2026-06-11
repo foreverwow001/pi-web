@@ -16,7 +16,18 @@ export function applyTranscriptEvent(messages: ChatLine[], event: SessionUiEvent
   if (event.type === "command.output") return [...messages, textMessage(event.level === "error" ? "system" : "tool", event.message)];
   if (event.type === "session.error") return [...messages, textMessage("system", event.message)];
   if (event.type === "message.end") return event.message === undefined ? undefined : applyFinalMessage(messages, event.message);
+  if (event.type === "round.usage") return appendRoundUsage(messages, event.usage);
   return undefined;
+}
+
+function appendRoundUsage(messages: ChatLine[], usage: Extract<SessionUiEvent, { type: "round.usage" }>["usage"]): ChatLine[] {
+  for (let lineIndex = messages.length - 1; lineIndex >= 0; lineIndex--) {
+    const line = messages[lineIndex];
+    if (line?.role !== "assistant") continue;
+    const parts = line.parts.filter((part) => part.type !== "roundUsage" || part.usage.roundId !== usage.roundId);
+    return [...messages.slice(0, lineIndex), { ...line, parts: [...parts, { type: "roundUsage", usage }] }, ...messages.slice(lineIndex + 1)];
+  }
+  return messages;
 }
 
 function applyFinalMessage(messages: ChatLine[], rawMessage: unknown): ChatLine[] | undefined {

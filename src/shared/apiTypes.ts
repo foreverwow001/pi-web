@@ -186,7 +186,7 @@ export interface SessionStatus {
   pendingMessageCount: number;
   queuedMessages: QueuedSessionMessage[];
   messageCount?: number;
-  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
+  tokens: UsageTokens;
   cost: number;
   contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null };
 }
@@ -403,6 +403,40 @@ export interface MessagePage {
   total: number;
 }
 
+export interface UsageTokens {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  total: number;
+}
+
+export interface UsageBreakdown {
+  tokens: UsageTokens;
+  cost: number;
+}
+
+export interface RoundChildUsage extends UsageBreakdown {
+  role?: string;
+  childSessionId?: string;
+  summaryPath?: string;
+  evidencePath?: string;
+  hasUsage: boolean;
+}
+
+export interface RoundUsageSnapshot {
+  roundId: string;
+  sessionId: string;
+  assistantMessageId?: string;
+  status: "complete" | "partial";
+  parent: UsageBreakdown;
+  child: UsageBreakdown;
+  total: UsageBreakdown;
+  childRuns: number;
+  childUsagePending: boolean;
+  children: RoundChildUsage[];
+}
+
 export type CommandResult =
   | { type: "done"; message?: string; session?: SessionInfo; promptDraft?: string }
   | { type: "select"; requestId: string; title: string; options: CommandOption[] }
@@ -421,6 +455,7 @@ export type SessionUiEvent =
   | { type: "agent.start" }
   | { type: "agent.end" }
   | { type: "message.end"; message?: unknown }
+  | { type: "round.usage"; usage: RoundUsageSnapshot }
   | { type: "status.update"; status: SessionStatus }
   | { type: "activity.update"; activity: SessionActivity }
   | { type: "command.output"; level: "info" | "success" | "error"; message: string }

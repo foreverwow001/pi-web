@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { textMessage } from "./chatMessages";
 import { applyTranscriptEvent } from "./chatTranscript";
+import type { RoundUsageSnapshot } from "../../shared/apiTypes";
 import type { ChatLine } from "./components/shared";
 
 const finalAssistant = {
@@ -194,6 +195,26 @@ describe("applyTranscriptEvent", () => {
         timestamp: "2026-05-09T12:00:00.000Z",
       },
     })).toEqual([{ ...optimistic, meta: { timestamp: "2026-05-09T12:00:00.000Z" } }]);
+  });
+
+  it("appends round usage to the final assistant message", () => {
+    const messages = [textMessage("user", "question"), textMessage("assistant", "answer")];
+    const usage: RoundUsageSnapshot = {
+      roundId: "round-1",
+      sessionId: "session-1",
+      status: "complete",
+      parent: { tokens: { input: 100, output: 20, cacheRead: 50, cacheWrite: 0, total: 170 }, cost: 0.01 },
+      child: { tokens: { input: 30, output: 10, cacheRead: 0, cacheWrite: 0, total: 40 }, cost: 0.02 },
+      total: { tokens: { input: 130, output: 30, cacheRead: 50, cacheWrite: 0, total: 210 }, cost: 0.03 },
+      childRuns: 1,
+      childUsagePending: false,
+      children: [{ role: "qa-reviewer", tokens: { input: 30, output: 10, cacheRead: 0, cacheWrite: 0, total: 40 }, cost: 0.02, hasUsage: true }],
+    };
+
+    expect(applyTranscriptEvent(messages, { type: "round.usage", usage })).toEqual([
+      textMessage("user", "question"),
+      { role: "assistant", parts: [{ type: "text", text: "answer" }, { type: "roundUsage", usage }] },
+    ]);
   });
 
   it("replaces an optimistic user message when the finalized text matches", () => {

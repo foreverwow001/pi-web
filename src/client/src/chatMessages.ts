@@ -1,4 +1,5 @@
 import type { ChatLine, ChatPart, ToolExecutionPart, ToolPreview } from "./components/shared";
+import type { RoundUsageSnapshot } from "../../shared/apiTypes";
 import type { PromptAttachmentSummary } from "../../shared/promptAttachments";
 
 export function normalizeMessages(messages: unknown[]): ChatLine[] {
@@ -46,7 +47,7 @@ export function normalizeMessage(message: unknown): ChatLine[] {
   if (isChatLine(message)) return [message];
   if (getString(message, "role") === "bashExecution") return [withMessageMeta(normalizeBashExecution(message), message)];
   const role = normalizeRole(getString(message, "role"));
-  const parts = normalizeContent(getProperty(message, "content"), message);
+  const parts = [...normalizeContent(getProperty(message, "content"), message), ...normalizeRoundUsageParts(message)];
   const skillLines = role === "user" ? normalizeSkillInvocation(parts) : undefined;
   if (skillLines !== undefined) return skillLines.map((line) => withMessageMeta(line, message));
   const source = normalizeSource(message);
@@ -184,6 +185,32 @@ function normalizeContent(content: unknown, message: unknown): ChatPart[] {
   }).map((part) => part.type === "text" && getString(message, "role") === "toolResult"
     ? toolResultPartFromText(part.text, message)
     : part);
+}
+
+function normalizeRoundUsageParts(message: unknown): ChatPart[] {
+  const usage = getProperty(message, "roundUsage");
+  return isRoundUsageSnapshot(usage) ? [{ type: "roundUsage", usage }] : [];
+}
+
+function isRoundUsageSnapshot(value: unknown): value is RoundUsageSnapshot {
+  if (!isRecord(value)) return false;
+  if (typeof value["roundId"] !== "string" || typeof value["sessionId"] !== "string") return false;
+  if (value["status"] !== "complete" && value["status"] !== "partial") return false;
+  return isUsageBreakdown(value["parent"]) && isUsageBreakdown(value["child"]) && isUsageBreakdown(value["total"])
+    && typeof value["childRuns"] === "number"
+    && typeof value["childUsagePending"] === "boolean"
+    && Array.isArray(value["children"]);
+}
+
+function isUsageBreakdown(value: unknown): boolean {
+  if (!isRecord(value) || !isRecord(value["tokens"])) return false;
+  const tokens = value["tokens"];
+  return typeof tokens["input"] === "number"
+    && typeof tokens["output"] === "number"
+    && typeof tokens["cacheRead"] === "number"
+    && typeof tokens["cacheWrite"] === "number"
+    && typeof tokens["total"] === "number"
+    && typeof value["cost"] === "number";
 }
 
 function parsePiWebAttachmentPackage(text: string): { text: string; attachments: PromptAttachmentSummary[] } | undefined {
