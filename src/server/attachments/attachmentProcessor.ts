@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import mammoth from "mammoth";
 import { PDFParse } from "pdf-parse";
+import WordExtractor from "word-extractor";
 import * as XLSX from "@e965/xlsx";
 import {
   extensionFromFilename,
@@ -110,11 +111,11 @@ function processImageAttachment(attachment: PromptAttachmentPayload, warnings: s
 
 async function processDocumentAttachment(attachment: PromptAttachmentPayload, warnings: string[], remainingChars: number): Promise<ProcessedAttachment> {
   if (attachment.size > MAX_DOCUMENT_ATTACHMENT_BYTES) return metadataOnly(attachment, [...warnings, "Document exceeds size limit."], "Document exceeds size limit.");
-  if (attachment.extension === ".doc") return metadataOnly(attachment, [...warnings, "Legacy .doc extraction requires LibreOffice; metadata only in this runtime."], "Legacy .doc extraction requires LibreOffice.");
   const buffer = decodeAttachmentBuffer(attachment);
   if (buffer === undefined) return metadataOnly(attachment, warnings, "No document content supplied.");
   if (attachment.extension === ".pdf") return includeText(attachment, warnings, await extractPdfText(buffer), remainingChars);
   if (attachment.extension === ".docx") return includeText(attachment, warnings, await extractDocxText(buffer), remainingChars);
+  if (attachment.extension === ".doc") return includeText(attachment, warnings, await extractDocText(buffer), remainingChars);
   if (attachment.extension === ".xlsx" || attachment.extension === ".xls") return includeText(attachment, warnings, extractWorkbookText(buffer), remainingChars);
   return metadataOnly(attachment, warnings, "Unsupported document type.");
 }
@@ -132,6 +133,12 @@ async function extractPdfText(buffer: Buffer): Promise<string> {
 async function extractDocxText(buffer: Buffer): Promise<string> {
   const result = await mammoth.extractRawText({ buffer });
   return result.value;
+}
+
+async function extractDocText(buffer: Buffer): Promise<string> {
+  const extractor = new WordExtractor();
+  const result = await extractor.extract(buffer);
+  return result.getBody();
 }
 
 function extractWorkbookText(buffer: Buffer): string {
