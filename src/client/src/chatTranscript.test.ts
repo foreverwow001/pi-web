@@ -217,6 +217,45 @@ describe("applyTranscriptEvent", () => {
     ]);
   });
 
+  it("keeps only one round usage row per assistant message", () => {
+    const usageOne: RoundUsageSnapshot = {
+      roundId: "round-1",
+      sessionId: "session-1",
+      status: "complete",
+      parent: { tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 }, cost: 0 },
+      child: { tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, cost: 0 },
+      total: { tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 }, cost: 0 },
+      childRuns: 0,
+      childUsagePending: false,
+      children: [],
+    };
+    const usageTwo: RoundUsageSnapshot = { ...usageOne, roundId: "round-2", total: { tokens: { input: 3, output: 2, cacheRead: 0, cacheWrite: 0, total: 5 }, cost: 0 } };
+    const messages = [{ role: "assistant" as const, parts: [{ type: "text" as const, text: "answer" }, { type: "roundUsage" as const, usage: usageOne }] }];
+
+    expect(applyTranscriptEvent(messages, { type: "round.usage", usage: usageTwo })).toEqual([
+      { role: "assistant", parts: [{ type: "text", text: "answer" }, { type: "roundUsage", usage: usageTwo }] },
+    ]);
+  });
+
+  it("preserves round usage if final assistant message arrives after usage event", () => {
+    const usage: RoundUsageSnapshot = {
+      roundId: "round-1",
+      sessionId: "session-1",
+      status: "complete",
+      parent: { tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 }, cost: 0 },
+      child: { tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, cost: 0 },
+      total: { tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 }, cost: 0 },
+      childRuns: 0,
+      childUsagePending: false,
+      children: [],
+    };
+    const messages = [{ role: "assistant" as const, parts: [{ type: "text" as const, text: "streamed" }, { type: "roundUsage" as const, usage }] }];
+
+    expect(applyTranscriptEvent(messages, { type: "message.end", message: { role: "assistant", content: "final" } })).toEqual([
+      { role: "assistant", parts: [{ type: "text", text: "final" }, { type: "roundUsage", usage }] },
+    ]);
+  });
+
   it("replaces an optimistic user message when the finalized text matches", () => {
     const messages = [textMessage("user", "sent prompt")];
 

@@ -10,6 +10,7 @@ export interface ActiveRoundUsage {
   roundId: string;
   sessionId: string;
   startedAt: string;
+  startAssistantMessageId?: string;
   start: UsageBreakdown;
   children: RoundChildUsage[];
 }
@@ -94,6 +95,25 @@ export function extractChildUsageFromToolResult(result: unknown): RoundChildUsag
     ...(summaryPath === undefined ? {} : { summaryPath }),
     ...(evidencePath === undefined ? {} : { evidencePath }),
   };
+}
+
+export function extractChildSummaryPathFromToolResult(result: unknown): string | undefined {
+  const evidence = findEvidence(result);
+  const evidencePath = evidence === undefined ? undefined : getString(evidence, "summary_path");
+  if (evidencePath !== undefined) return evidencePath;
+  for (const text of collectStrings(result)) {
+    const match = /(?:^|\n)Summary:\s*([^\s]+)/.exec(text);
+    if (match?.[1] !== undefined) return match[1];
+  }
+  return undefined;
+}
+
+function collectStrings(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap((item) => collectStrings(item));
+  const record = asRecord(value);
+  if (record === undefined) return [];
+  return Object.values(record).flatMap((item) => collectStrings(item));
 }
 
 function findEvidence(value: unknown): Record<string, unknown> | undefined {

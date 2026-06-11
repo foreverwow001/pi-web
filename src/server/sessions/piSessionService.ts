@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
 import {
@@ -29,7 +31,7 @@ import { fallbackSessionName, generateShortSessionName } from "./sessionNameGene
 import { computeEditPreview, type EditPreviewResult } from "./editPreview.js";
 import type { WorkspaceActivityService } from "../activity/workspaceActivityService.js";
 import { packagePromptWithAttachments, type AttachmentSummary } from "../attachments/attachmentProcessor.js";
-import { buildRoundUsageSnapshot, extractChildUsageFromToolResult, usageBreakdownFromStats, type ActiveRoundUsage } from "./roundUsage.js";
+import { buildRoundUsageSnapshot, extractChildSummaryPathFromToolResult, extractChildUsageFromToolResult, usageBreakdownFromStats, type ActiveRoundUsage } from "./roundUsage.js";
 import { RoundUsageStore } from "./roundUsageStore.js";
 
 function noop(): void {
@@ -265,6 +267,7 @@ export class PiSessionService {
   private readonly compactionDrainTimers = new Map<string, NodeJS.Timeout>();
   private readonly activeRounds = new Map<string, ActiveRoundUsage>();
   private readonly pendingRounds = new Map<string, ActiveRoundUsage[]>();
+  private readonly lastAssistantMessageIds = new Map<string, string>();
   private readonly authLossWarnings = new Set<string>();
   private readonly extensionUiPending = new Map<string, ExtensionUiRequest[]>();
   private readonly extensionUiResolvers = new Map<string, ExtensionUiResolver>();
@@ -319,6 +322,7 @@ export class PiSessionService {
     this.compactionPromptQueues.clear();
     this.activeRounds.clear();
     this.pendingRounds.clear();
+    this.lastAssistantMessageIds.clear();
     this.authLossWarnings.clear();
     this.extensionUiPending.clear();
     this.extensionUiResolvers.clear();
@@ -473,52 +477,47 @@ export class PiSessionService {
   private submitPrompt(session: PiAgentSession, text: string, behavior: QueuedPromptKind | undefined, displayText = text, attachments: AttachmentSummary[] = [], images: ImageContent[] = []): Promise<void> {
     this.publishActivity(session, behavior === "steer" ? "steering queued" : behavior === "followUp" ? "message queued" : "prompt accepted", "active");
     if (behavior === undefined) this.events.publish(session.sessionId, { type: "message.append", message: userTextMessage(displayText, attachments) });
-    this.registerRoundForPrompt(session, behavior);
+    const round = this.registerRoundForPrompt(session, behavior);
     const options = { ...(behavior === undefined ? {} : { streamingBehavior: behavior }), ...(images.length === 0 ? {} : { images }) };
-    const promptPromise = session.prompt(text, Object.keys(options).length === 0 ? undefined : options).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
-      this.publishActivity(session, "error", "error", message);
-      this.events.publish(session.sessionId, { type: "session.error", message });
-      this.publishPartialRoundUsage(session);
-    });
+    const promptPromise = session.prompt(text, Object.keys(options).length === 0 ? undefined : options)
+      .then(() => { this.publishCompleteRoundUsage(session, round); })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.publishActivity(session, "error", "error", message);
+        this.events.publish(session.sessionId, { type: "session.error", message });
+        this.publishPartialRoundUsage(session, round);
+      });
     void promptPromise;
     return promptPromise;
   }
 
-  private registerRoundForPrompt(session: PiAgentSession, behavior: QueuedPromptKind | undefined): void {
+  private registerRoundForPrompt(session: PiAgentSession, behavior: QueuedPromptKind | undefined): ActiveRoundUsage {
     const round = this.createRound(session);
     if (behavior === undefined && !this.activeRounds.has(session.sessionId)) {
       this.activeRounds.set(session.sessionId, round);
-      return;
+      return round;
     }
     const queue = this.pendingRounds.get(session.sessionId) ?? [];
     queue.push(round);
     this.pendingRounds.set(session.sessionId, queue);
+    return round;
   }
 
   private createRound(session: PiAgentSession): ActiveRoundUsage {
+    const startAssistantMessageId = this.resolveLatestAssistantMessageId(session);
     return {
       roundId: randomUUID(),
       sessionId: session.sessionId,
       startedAt: new Date().toISOString(),
+      ...(startAssistantMessageId === undefined ? {} : { startAssistantMessageId }),
       start: usageBreakdownFromStats(session.getSessionStats()),
       children: [],
     };
   }
 
-  private ensureActiveRoundForTurn(session: PiAgentSession): void {
-    if (this.activeRounds.has(session.sessionId)) return;
-    const queued = this.pendingRounds.get(session.sessionId);
-    const round = queued?.shift() ?? this.createRound(session);
-    round.start = usageBreakdownFromStats(session.getSessionStats());
-    this.activeRounds.set(session.sessionId, round);
-    if (queued?.length === 0) this.pendingRounds.delete(session.sessionId);
-  }
-
-  private publishCompleteRoundUsage(session: PiAgentSession, event: unknown): void {
-    const round = this.activeRounds.get(session.sessionId);
-    if (round === undefined) return;
-    const assistantMessageId = getString(getProperty(event, "message"), "id");
+  private publishCompleteRoundUsage(session: PiAgentSession, round: ActiveRoundUsage): void {
+    if (!this.activateRoundForPublish(session, round)) return;
+    const assistantMessageId = this.resolveAssistantMessageId(session, round);
     const usage = {
       ...buildRoundUsageSnapshot({ round, end: usageBreakdownFromStats(session.getSessionStats()), status: "complete" }),
       ...(assistantMessageId === undefined ? {} : { assistantMessageId }),
@@ -526,22 +525,74 @@ export class PiSessionService {
     this.activeRounds.delete(session.sessionId);
     this.events.publish(session.sessionId, { type: "round.usage", usage });
     void this.roundUsageStore.upsert(session.sessionId, assistantMessageId, usage).catch(() => undefined);
+    this.promoteNextRound(session);
   }
 
-  private publishPartialRoundUsage(session: PiAgentSession): void {
-    const round = this.activeRounds.get(session.sessionId);
-    if (round === undefined) return;
+  private publishPartialRoundUsage(session: PiAgentSession, round: ActiveRoundUsage): void {
+    if (!this.activateRoundForPublish(session, round)) return;
     const usage = buildRoundUsageSnapshot({ round, end: usageBreakdownFromStats(session.getSessionStats()), status: "partial", childUsagePending: false });
     this.activeRounds.delete(session.sessionId);
     this.events.publish(session.sessionId, { type: "round.usage", usage });
+    this.promoteNextRound(session);
+  }
+
+  private activateRoundForPublish(session: PiAgentSession, round: ActiveRoundUsage): boolean {
+    const active = this.activeRounds.get(session.sessionId);
+    if (active === round) return true;
+    this.removePendingRound(session.sessionId, round);
+    return false;
+  }
+
+  private promoteNextRound(session: PiAgentSession): void {
+    if (this.activeRounds.has(session.sessionId)) return;
+    const queue = this.pendingRounds.get(session.sessionId);
+    const next = queue?.shift();
+    if (next === undefined) return;
+    next.start = usageBreakdownFromStats(session.getSessionStats());
+    this.activeRounds.set(session.sessionId, next);
+    if (queue?.length === 0) this.pendingRounds.delete(session.sessionId);
+  }
+
+  private removePendingRound(sessionId: string, round: ActiveRoundUsage): void {
+    const queue = this.pendingRounds.get(sessionId);
+    if (queue === undefined) return;
+    const next = queue.filter((candidate) => candidate !== round);
+    if (next.length === 0) this.pendingRounds.delete(sessionId);
+    else this.pendingRounds.set(sessionId, next);
+  }
+
+  private recordAssistantMessageId(session: PiAgentSession, event: unknown): void {
+    const id = getString(getProperty(event, "message"), "id");
+    if (id !== undefined) this.lastAssistantMessageIds.set(session.sessionId, id);
+  }
+
+  private resolveLatestAssistantMessageId(session: PiAgentSession): string | undefined {
+    return this.lastAssistantMessageIds.get(session.sessionId) ?? findLastAssistantMessageId(session);
+  }
+
+  private resolveAssistantMessageId(session: PiAgentSession, round: ActiveRoundUsage): string | undefined {
+    const candidate = this.resolveLatestAssistantMessageId(session);
+    return candidate === round.startAssistantMessageId ? undefined : candidate;
   }
 
   private collectChildUsageForEvent(session: PiAgentSession, event: unknown): void {
     const round = this.activeRounds.get(session.sessionId);
     if (round === undefined) return;
-    const childUsage = extractChildUsageFromToolResult(getProperty(event, "result"));
+    const result = getProperty(event, "result");
+    const childUsage = extractChildUsageFromToolResult(result) ?? this.extractChildUsageFromSummary(session, result);
     if (childUsage === undefined) return;
     round.children.push(childUsage);
+  }
+
+  private extractChildUsageFromSummary(session: PiAgentSession, result: unknown): ReturnType<typeof extractChildUsageFromToolResult> {
+    const summaryPath = extractChildSummaryPathFromToolResult(result);
+    if (summaryPath === undefined) return undefined;
+    try {
+      const absolutePath = isAbsolute(summaryPath) ? summaryPath : resolve(session.sessionManager.getCwd(), summaryPath);
+      return extractChildUsageFromToolResult(JSON.parse(readFileSync(absolutePath, "utf8")));
+    } catch {
+      return undefined;
+    }
   }
 
   private enqueuePromptDuringCompaction(session: PiAgentSession, text: string, kind: QueuedPromptKind, displayText?: string, attachments?: AttachmentSummary[], images?: ImageContent[]): void {
@@ -656,7 +707,8 @@ export class PiSessionService {
     const active = this.active.get(sessionId);
     if (!active) return;
     this.clearCompactionPromptQueue(sessionId);
-    this.publishPartialRoundUsage(active.runtime.session);
+    const round = this.activeRounds.get(sessionId);
+    if (round !== undefined) this.publishPartialRoundUsage(active.runtime.session, round);
     this.pendingRounds.delete(sessionId);
     this.clearExtensionUiForSession(sessionId);
     clearSessionQueue(active.runtime.session);
@@ -757,6 +809,7 @@ export class PiSessionService {
     this.clearCompactionPromptQueue(sessionId);
     this.activeRounds.delete(sessionId);
     this.pendingRounds.delete(sessionId);
+    this.lastAssistantMessageIds.delete(sessionId);
     this.clearExtensionUiForSession(sessionId);
     clearSessionQueue(active.runtime.session);
     active.unsubscribe();
@@ -949,17 +1002,17 @@ export class PiSessionService {
           this.clearCompactionPromptQueue(sessionId);
           this.activeRounds.delete(sessionId);
           this.pendingRounds.delete(sessionId);
+          this.lastAssistantMessageIds.delete(sessionId);
           this.clearExtensionUiForSession(sessionId);
         }
       }
     }
     active.unsubscribe = session.subscribe((event) => {
       const eventType = getString(event, "type");
-      if (eventType === "turn_start") this.ensureActiveRoundForTurn(session);
+      if (eventType === "message_end") this.recordAssistantMessageId(session, event);
       if (eventType === "tool_execution_end") this.collectChildUsageForEvent(session, event);
       this.events.publish(session.sessionId, toClientEvent(event));
       this.publishActivityForEvent(session, event);
-      if (eventType === "turn_end") this.publishCompleteRoundUsage(session, event);
       if (eventType === "compaction_end") this.scheduleCompactionQueueDrain(session.sessionId);
       if (eventType === "agent_start" || eventType === "agent_end") this.scheduleCompactionQueueDrain(session.sessionId);
       this.publishStatus(session);
@@ -1415,16 +1468,41 @@ function stringValue(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+function findLastAssistantMessageId(session: PiAgentSession): string | undefined {
+  const branch = session.sessionManager.getBranch();
+  for (let index = branch.length - 1; index >= 0; index--) {
+    const entry = branch[index];
+    if (!isRecord(entry) || entry["type"] !== "message") continue;
+    const message = getProperty(entry, "message");
+    if (getString(message, "role") !== "assistant") continue;
+    const id = getString(entry, "id");
+    if (id !== undefined) return id;
+  }
+  return undefined;
+}
+
 function historyMessages(session: PiAgentSession): unknown[] {
   const messages: unknown[] = [];
   for (const entry of session.sessionManager.getBranch()) {
     if (!isRecord(entry)) continue;
-    if (entry["type"] === "message") messages.push(entry["message"]);
+    if (entry["type"] === "message") messages.push(messageWithEntryMetadata(entry));
     else if (entry["type"] === "custom_message" && entry["display"] === true) messages.push({ role: "custom", content: entry["content"], customType: entry["customType"], details: entry["details"] });
     else if (entry["type"] === "compaction") messages.push({ role: "system", source: "compaction", content: `Compacted history:\n\n${stringValue(entry["summary"])}` });
     else if (entry["type"] === "branch_summary") messages.push({ role: "system", source: "branch_summary", content: `Branch summary:\n\n${stringValue(entry["summary"])}` });
   }
   return messages;
+}
+
+function messageWithEntryMetadata(entry: Record<string, unknown>): unknown {
+  const message = getProperty(entry, "message");
+  if (!isRecord(message)) return message;
+  const id = getString(entry, "id");
+  const timestamp = getProperty(entry, "timestamp");
+  return {
+    ...message,
+    ...(id === undefined || getString(message, "id") !== undefined ? {} : { id }),
+    ...(timestamp === undefined || getProperty(message, "timestamp") !== undefined ? {} : { timestamp }),
+  };
 }
 
 function attachRoundUsage(messages: unknown[], usageByMessageId: Map<string, RoundUsageSnapshot>): unknown[] {

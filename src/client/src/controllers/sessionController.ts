@@ -12,7 +12,7 @@ import { InMemorySessionSelectionMemory, markSessionArchived, markSessionsArchiv
 import { selectedMachineId, type GetState, type SetState, type UpdateUrl } from "./types";
 import type { PromptAttachmentPayload } from "../../../shared/promptAttachments";
 
-const MESSAGE_PAGE_SIZE = 100;
+const MESSAGE_PAGE_SIZE = 200;
 
 export interface SessionEventSocket {
   connect(sessionId: string, onEvent: (event: SessionUiEvent) => void, onReconnect?: () => void, machineId?: string): void;

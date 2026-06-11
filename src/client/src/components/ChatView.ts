@@ -152,8 +152,9 @@ export class ChatView extends LitElement {
   protected override updated(changed: Map<string, unknown>): void {
     if (changed.has("loadingMore") && !this.loadingMore) this.loadMoreRequested = false;
     if (changed.has("hasMore") && !this.hasMore) this.loadMoreRequested = false;
-    if (changed.has("sessionId")) this.restoreScrollPosition();
-    if (!changed.has("sessionId") && changed.has("messages") && this.pinnedToBottom) this.scrollToBottom();
+    if (changed.has("sessionId")) this.forceScrollToLatest();
+    if (!changed.has("sessionId") && this.didRefreshLatestPage(changed)) this.forceScrollToLatest();
+    else if (!changed.has("sessionId") && changed.has("messages") && this.pinnedToBottom) this.scrollToBottom();
     if (changed.has("messages") || changed.has("messageStart") || changed.has("messageTotal") || changed.has("hasMore") || changed.has("loadingMore")) this.scheduleConversationRailUpdate();
     if (changed.has("messages") || changed.has("messageStart") || changed.has("hasMore") || changed.has("loadingMore")) this.continuePendingScrollRestore();
     if (changed.has("messages") || changed.has("hasMore") || changed.has("loadingMore")) this.requestLoadMoreIfNeeded();
@@ -657,6 +658,24 @@ export class ChatView extends LitElement {
   private canScrollUp(): boolean {
     const chat = this.chat;
     return chat !== undefined && chat.scrollTop > 0;
+  }
+
+  private didRefreshLatestPage(changed: Map<string, unknown>): boolean {
+    return !this.loadingMore
+      && (changed.has("messageEnd") || changed.has("messageTotal"))
+      && this.messageTotal > 0
+      && this.messageEnd >= this.messageTotal;
+  }
+
+  private forceScrollToLatest(): void {
+    this.pinnedToBottom = true;
+    this.pendingScrollRestoreSessionId = undefined;
+    this.pendingScrollRestorePosition = undefined;
+    if (this.restoreScrollFrame !== undefined) {
+      cancelAnimationFrame(this.restoreScrollFrame);
+      this.restoreScrollFrame = undefined;
+    }
+    this.scrollToBottom();
   }
 
   private scrollToBottom() {

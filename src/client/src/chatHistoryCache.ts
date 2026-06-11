@@ -39,6 +39,7 @@ export function mergeChatHistory(existing: RawMessagePage | undefined, incoming:
   if (existing === undefined || !isValidMessagePage(existing)) return incoming;
   if (!isValidMessagePage(incoming)) return existing;
   if (isCompleteReplacement(existing, incoming)) return incoming;
+  if (isTailPage(incoming)) return mergeTailPage(existing, incoming);
 
   const start = Math.min(existing.start, incoming.start);
   const end = Math.max(existing.start + existing.messages.length, incoming.start + incoming.messages.length);
@@ -52,6 +53,17 @@ export function mergeChatHistory(existing: RawMessagePage | undefined, incoming:
 
 function isCompleteReplacement(existing: RawMessagePage, incoming: RawMessagePage): boolean {
   return existing.total > incoming.total && existing.start === 0 && incoming.start === 0 && incoming.messages.length === incoming.total;
+}
+
+function isTailPage(page: RawMessagePage): boolean {
+  return page.start + page.messages.length === page.total;
+}
+
+function mergeTailPage(existing: RawMessagePage, incoming: RawMessagePage): RawMessagePage {
+  const existingEnd = existing.start + existing.messages.length;
+  if (existing.start >= incoming.start || existingEnd < incoming.start) return incoming;
+  const preserved = existing.messages.slice(0, incoming.start - existing.start);
+  return { start: existing.start, total: incoming.total, messages: [...preserved, ...incoming.messages] };
 }
 
 function hasSparseEntries(messages: unknown[]): boolean {

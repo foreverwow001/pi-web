@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildRoundUsageSnapshot, extractChildUsageFromToolResult, usageBreakdownFromStats } from "./roundUsage";
+import { buildRoundUsageSnapshot, extractChildSummaryPathFromToolResult, extractChildUsageFromToolResult, usageBreakdownFromStats } from "./roundUsage";
 
 describe("round usage aggregation", () => {
   it("builds parent and child totals from cumulative snapshots", () => {
@@ -21,6 +21,12 @@ describe("round usage aggregation", () => {
       total: { tokens: { input: 105, output: 40, cacheRead: 30, cacheWrite: 0, total: 175 }, cost: 0.05 },
       childRuns: 1,
     });
+  });
+
+  it("extracts formal child summary path from text-only tool results", () => {
+    expect(extractChildSummaryPathFromToolResult({
+      content: [{ type: "text", text: "FORMAL_ROLE_CHILD_EXECUTION_RETAINED: domain-expert\nJSONL: child.jsonl\nSummary: doc/readiness/Idx-408/child_summary.json\nVerdict: PASS" }],
+    })).toBe("doc/readiness/Idx-408/child_summary.json");
   });
 
   it("extracts formal child usage from tool result details", () => {
