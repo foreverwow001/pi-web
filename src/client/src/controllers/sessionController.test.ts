@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { api as defaultApi, type MessagePage, type SessionActivity, type SessionInfo, type SessionStatus, type Workspace } from "../api";
 import { isCachedNewSessionInfo, loadCachedNewSessions, markCachedNewSessionInfo, rememberCachedNewSession } from "../cachedNewSessions";
+import { textMessage } from "../chatMessages";
 import { initialAppState, type AppState } from "../appState";
 import { machineSessionKey } from "../machineKeys";
 import { loadDraft, saveDraft } from "../promptDraftStorage";
@@ -92,6 +93,18 @@ function status(sessionId: string): SessionStatus {
   };
 }
 
+async function nextMicrotask(): Promise<void> {
+  await Promise.resolve();
+}
+
+async function eventually(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (predicate()) return;
+    await nextMicrotask();
+  }
+  throw new Error("Condition was not met");
+}
+
 describe("SessionController", () => {
   afterEach(() => {
     Object.defineProperty(globalThis, "localStorage", { value: undefined, configurable: true });
@@ -139,6 +152,83 @@ describe("SessionController", () => {
 
     expect(state.sessions[0]?.messageCount).toBe(3);
     expect(state.selectedSession?.messageCount).toBe(3);
+  });
+
+  it("refreshes the selected transcript tail when idle status reports newer messages", async () => {
+    const latestPage: MessagePage = {
+      start: 0,
+      total: 3,
+      messages: [
+        { role: "user", content: "one" },
+        { role: "assistant", content: "two" },
+        { role: "assistant", content: "three" },
+      ],
+    };
+    let messagesCalled = 0;
+    let state: AppState = {
+      ...initialAppState(),
+      selectedSession: oldSession,
+      sessions: [oldSession],
+      messages: [textMessage("user", "one")],
+      messagePageStart: 0,
+      messagePageEnd: 1,
+      messagePageTotal: 1,
+    };
+    const api: typeof defaultApi = {
+      ...defaultApi,
+      messages: () => {
+        messagesCalled += 1;
+        return Promise.resolve(latestPage);
+      },
+    };
+    const controller = new SessionController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      undefined,
+      { api, socket: new FakeSocket() },
+    );
+
+    controller.applyGlobalEvent({ type: "status.update", status: { ...status(oldSession.id), messageCount: 3 } });
+    await eventually(() => state.messagePageTotal === 3);
+
+    expect(messagesCalled).toBe(1);
+    expect(state.messagePageStart).toBe(0);
+    expect(state.messagePageEnd).toBe(3);
+    expect(state.messagePageTotal).toBe(3);
+    expect(state.messages.at(-1)?.parts).toEqual([{ type: "text", text: "three" }]);
+  });
+
+  it("does not run status tail refresh while the selected session is streaming", async () => {
+    let messagesCalled = 0;
+    let state: AppState = {
+      ...initialAppState(),
+      selectedSession: oldSession,
+      sessions: [oldSession],
+      messagePageStart: 0,
+      messagePageEnd: 1,
+      messagePageTotal: 1,
+    };
+    const api: typeof defaultApi = {
+      ...defaultApi,
+      messages: () => {
+        messagesCalled += 1;
+        return Promise.resolve(emptyPage);
+      },
+    };
+    const controller = new SessionController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      undefined,
+      { api, socket: new FakeSocket() },
+    );
+
+    controller.applyGlobalEvent({ type: "status.update", status: { ...status(oldSession.id), isStreaming: true, messageCount: 3 } });
+    await nextMicrotask();
+
+    expect(messagesCalled).toBe(0);
+    expect(state.messagePageTotal).toBe(1);
   });
 
   it("keeps live message count updates when a cached new session becomes persisted", async () => {

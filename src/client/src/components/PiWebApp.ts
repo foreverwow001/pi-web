@@ -64,6 +64,7 @@ import { appStyles } from "./shared";
 
 
 const PI_WEB_STATUS_REFRESH_MS = 15 * 60 * 1000;
+const SELECTED_SESSION_STATUS_CATCHUP_MS = 10 * 1000;
 const GLOBAL_SHORTCUT_LISTENER_OPTIONS = { capture: true } as const;
 const THEME_AUTO_ON_VALUE = "auto:on";
 const THEME_AUTO_OFF_VALUE = "auto:off";
@@ -145,6 +146,7 @@ export class PiWebApp extends LitElement {
   private terminalAutoStartWorkspaceId: string | undefined;
   private piWebStatusTimer: number | undefined;
   private workspaceDeletionPollTimer: number | undefined;
+  private selectedSessionStatusCatchupTimer: number | undefined;
   private refreshingWorkspaceDeletionRuns = false;
   private readonly handledWorkspaceDeletionRunIds = new Set<string>();
   private readonly terminalCommandRunRuntimes = new Map<string, TerminalCommandRunsInternalRuntime>();
@@ -214,6 +216,7 @@ export class PiWebApp extends LitElement {
     this.applyPreferredTheme(false);
     this.connectRealtime();
     this.piWebStatusTimer = window.setInterval(() => { void this.refreshPiWebStatus(); }, PI_WEB_STATUS_REFRESH_MS);
+    this.selectedSessionStatusCatchupTimer = window.setInterval(() => { void this.sessions.refreshSelectedSessionStatus(); }, SELECTED_SESSION_STATUS_CATCHUP_MS);
     void this.refreshPiWebStatus();
     void this.refreshWorkspaceActivity();
     void this.loadClientConfig();
@@ -236,6 +239,8 @@ export class PiWebApp extends LitElement {
     this.git.dispose();
     if (this.piWebStatusTimer !== undefined) window.clearInterval(this.piWebStatusTimer);
     this.piWebStatusTimer = undefined;
+    if (this.selectedSessionStatusCatchupTimer !== undefined) window.clearInterval(this.selectedSessionStatusCatchupTimer);
+    this.selectedSessionStatusCatchupTimer = undefined;
     if (this.workspaceDeletionPollTimer !== undefined) window.clearInterval(this.workspaceDeletionPollTimer);
     this.workspaceDeletionPollTimer = undefined;
     super.disconnectedCallback();
@@ -433,12 +438,14 @@ export class PiWebApp extends LitElement {
   }
 
   private async withChatScrollTransition(action: () => Promise<void>) {
-    this.chatView?.saveScrollPosition();
+    const previousSessionId = this.state.selectedSession?.id;
+    if (previousSessionId !== undefined) this.chatView?.saveScrollPosition();
     await action();
     await this.updateComplete;
     await this.chatView?.updateComplete;
     await nextFrame();
-    this.chatView?.restoreScrollPosition();
+    const currentSessionId = this.state.selectedSession?.id;
+    if (previousSessionId !== undefined && previousSessionId === currentSessionId) this.chatView?.restoreScrollPosition();
     if (this.shouldAutoFocusPrompt()) this.promptEditor?.focusInput();
   }
 

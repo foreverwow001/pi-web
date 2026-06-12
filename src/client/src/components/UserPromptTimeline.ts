@@ -60,16 +60,14 @@ export class UserPromptTimeline extends LitElement {
       flex-direction: column;
       gap: 5px;
       align-items: stretch;
-      overflow-y: auto;
-      overflow-x: hidden;
+      overflow: hidden;
       padding: 4px;
       border: 1px solid color-mix(in srgb, var(--pi-border) 70%, transparent);
       border-radius: 10px;
       background: color-mix(in srgb, var(--pi-bg) 86%, transparent);
       box-shadow: 0 8px 24px var(--pi-shadow-soft);
       backdrop-filter: blur(6px);
-      pointer-events: auto;
-      scrollbar-width: thin;
+      pointer-events: none;
     }
     .node {
       flex: 0 0 auto;
@@ -86,6 +84,7 @@ export class UserPromptTimeline extends LitElement {
       font-size: 13px;
       line-height: 1;
       cursor: pointer;
+      pointer-events: auto;
       opacity: .78;
     }
     .node:hover,

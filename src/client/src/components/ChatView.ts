@@ -19,6 +19,13 @@ import type { UserPromptTimelineItem } from "./UserPromptTimeline";
 const shortTimestampFormatter = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 const fullTimestampFormatter = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium" });
 
+const USER_TIMELINE_VISIBLE_ITEM_COUNT = 18;
+const USER_TIMELINE_EDGE_MARGIN = 4;
+const USER_TIMELINE_SYNC_THROTTLE_MS = 180;
+const CONVERSATION_RAIL_SYNC_THROTTLE_MS = 120;
+
+type UserPromptTimelinePrompt = Pick<UserPromptTimelineItem, "id" | "index" | "text">;
+
 const partialStreamNoticeBodies = [
   "You opened this chat while the assistant was already replying. The complete answer will appear shortly.",
   "We joined mid-sentence. Holding the curtain until the full reply is ready.",
@@ -61,6 +68,8 @@ export class ChatView extends LitElement {
   @state() private expandedMetaKey: string | undefined;
   @state() private copiedMessageKey: string | undefined;
   @state() private currentConversationIndex: number | undefined;
+  @state() private currentTimelineUserIndex: number | undefined;
+  @state() private timelineWindowStartIndex = 0;
   private readonly disclosures = new ChatDisclosureController();
   private readonly scrollController = new ChatScrollController();
   private suppressScrollSave = false;
@@ -68,9 +77,23 @@ export class ChatView extends LitElement {
   private loadMoreCheckFrame: number | undefined;
   private scrollToBottomFrame: number | undefined;
   private conversationRailFrame: number | undefined;
+  private conversationRailTimer: number | undefined;
+  private timelineSyncTimer: number | undefined;
+  private pendingTimelineConversationIndex: number | undefined;
+  private visibleArticleObserver: IntersectionObserver | undefined;
+  private readonly observedArticleElements = new Set<HTMLElement>();
+  private readonly visibleArticleIndexes = new Set<number>();
+  private primaryArticleElementsCache: HTMLElement[] = [];
+  private articleElementsCache: HTMLElement[] = [];
+  private scrollAnchorElementsCache: HTMLElement[] = [];
+  private scrollMarkerElementsCache: HTMLElement[] = [];
+  private scrollElementCacheDirty = true;
   private groupedMessagesInput?: ChatLine[];
   private groupedMessagesStart = 0;
   private groupedMessagesCache: ChatGroup[] = [];
+  private userPromptTimelineInput?: ChatLine[];
+  private userPromptTimelineStart = 0;
+  private userPromptTimelineCache: UserPromptTimelinePrompt[] = [];
   private readonly messageMetaCache = new WeakMap<ChatLine, { short: string; full: string }>();
   private readonly messageCopyTextCache = new WeakMap<ChatLine, string>();
   private partialStreamNoticeBody: string | undefined;
@@ -109,6 +132,9 @@ export class ChatView extends LitElement {
     if (this.loadMoreCheckFrame !== undefined) cancelAnimationFrame(this.loadMoreCheckFrame);
     if (this.scrollToBottomFrame !== undefined) cancelAnimationFrame(this.scrollToBottomFrame);
     if (this.conversationRailFrame !== undefined) cancelAnimationFrame(this.conversationRailFrame);
+    if (this.conversationRailTimer !== undefined) window.clearTimeout(this.conversationRailTimer);
+    if (this.timelineSyncTimer !== undefined) window.clearTimeout(this.timelineSyncTimer);
+    this.disconnectVisibleArticleObserver();
     window.removeEventListener("resize", this.onViewportResize);
     window.removeEventListener("pagehide", this.onPageHide);
     window.visualViewport?.removeEventListener("resize", this.onViewportResize);
@@ -155,7 +181,10 @@ export class ChatView extends LitElement {
     if (changed.has("sessionId")) this.forceScrollToLatest();
     if (!changed.has("sessionId") && this.didRefreshLatestPage(changed)) this.forceScrollToLatest();
     else if (!changed.has("sessionId") && changed.has("messages") && this.pinnedToBottom) this.scrollToBottom();
-    if (changed.has("messages") || changed.has("messageStart") || changed.has("messageTotal") || changed.has("hasMore") || changed.has("loadingMore")) this.scheduleConversationRailUpdate();
+    if (changed.has("messages") || changed.has("messageStart") || changed.has("messageTotal") || changed.has("hasMore") || changed.has("loadingMore")) {
+      this.refreshScrollElementCache();
+      this.scheduleConversationRailUpdate({ immediate: true });
+    }
     if (changed.has("messages") || changed.has("messageStart") || changed.has("hasMore") || changed.has("loadingMore")) this.continuePendingScrollRestore();
     if (changed.has("messages") || changed.has("hasMore") || changed.has("loadingMore")) this.requestLoadMoreIfNeeded();
   }
@@ -291,24 +320,43 @@ export class ChatView extends LitElement {
   }
 
   private userPromptTimelineItems(): UserPromptTimelineItem[] {
-    const userIndices = this.messages
-      .map((message, offset) => ({ message, index: this.messageStart + offset }))
-      .filter(({ message }) => message.role === "user" && this.firstTextPart(message) !== "");
-    if (userIndices.length === 0) return [];
+    const prompts = this.userPromptTimelinePrompts();
+    if (prompts.length === 0) return [];
 
     const currentIndex = this.currentConversationIndex ?? (this.pinnedToBottom ? this.messageStart + this.messages.length - 1 : this.messageStart);
-    let activeIndex = userIndices[0]?.index ?? 0;
-    for (const item of userIndices) {
-      if (item.index <= currentIndex) activeIndex = item.index;
-      else break;
-    }
+    const activeIndex = this.currentTimelineUserIndex ?? this.userPromptTimelinePosition(currentIndex, prompts)?.index ?? prompts[0]?.index;
+    if (activeIndex === undefined) return [];
 
-    return userIndices.map(({ message, index }) => ({
-      id: `user:${String(index)}`,
-      index,
-      text: this.firstTextPart(message),
-      active: index === activeIndex,
+    const timelineStart = this.clampedTimelineWindowStart(this.timelineWindowStartIndex, prompts.length);
+    return prompts.slice(timelineStart, timelineStart + USER_TIMELINE_VISIBLE_ITEM_COUNT).map((prompt) => ({
+      ...prompt,
+      active: prompt.index === activeIndex,
     }));
+  }
+
+  private userPromptTimelinePrompts(): UserPromptTimelinePrompt[] {
+    if (this.userPromptTimelineInput === this.messages && this.userPromptTimelineStart === this.messageStart) return this.userPromptTimelineCache;
+    this.userPromptTimelineInput = this.messages;
+    this.userPromptTimelineStart = this.messageStart;
+    this.userPromptTimelineCache = this.messages.flatMap((message, offset): UserPromptTimelinePrompt[] => {
+      if (message.role !== "user") return [];
+      const text = this.firstTextPart(message);
+      if (text === "") return [];
+      const index = this.messageStart + offset;
+      return [{ id: `user:${String(index)}`, index, text }];
+    });
+    return this.userPromptTimelineCache;
+  }
+
+  private centeredTimelineWindowStart(activePosition: number, totalItems: number): number {
+    if (totalItems <= USER_TIMELINE_VISIBLE_ITEM_COUNT) return 0;
+    const leadingItems = Math.floor((USER_TIMELINE_VISIBLE_ITEM_COUNT - 1) / 2);
+    return Math.min(Math.max(0, activePosition - leadingItems), totalItems - USER_TIMELINE_VISIBLE_ITEM_COUNT);
+  }
+
+  private clampedTimelineWindowStart(start: number, totalItems: number): number {
+    if (totalItems <= USER_TIMELINE_VISIBLE_ITEM_COUNT) return 0;
+    return Math.min(Math.max(0, start), totalItems - USER_TIMELINE_VISIBLE_ITEM_COUNT);
   }
 
   private firstTextPart(message: ChatLine): string {
@@ -383,18 +431,24 @@ export class ChatView extends LitElement {
           <b class="label">${defaultOpen ? "live events" : "events"}</b>
           <span>${summarizeChatGroup(messages)}</span>
         </summary>
-        <div class="group-body">
-          ${messages.map((message, offset) => {
-            const toolOnly = this.isToolExecutionOnlyMessage(message);
-            return html`
-              <section class=${toolOnly ? "group-msg tool-execution-shell" : `group-msg ${message.role}`} data-index=${startIndex + offset} data-scroll-anchor-id=${this.eventAnchorKey(startIndex + offset)}>
-                ${toolOnly ? null : this.renderMessageHeader(message, `${String(startIndex)}:${String(offset)}`)}
-                ${message.parts.map((part) => this.renderPart(part, message))}
-              </section>
-            `;
-          })}
-        </div>
+        ${open ? this.renderMessageGroupBody(messages, startIndex) : null}
       </details>
+    `;
+  }
+
+  private renderMessageGroupBody(messages: ChatLine[], startIndex: number) {
+    return html`
+      <div class="group-body">
+        ${messages.map((message, offset) => {
+          const toolOnly = this.isToolExecutionOnlyMessage(message);
+          return html`
+            <section class=${toolOnly ? "group-msg tool-execution-shell" : `group-msg ${message.role}`} data-index=${startIndex + offset} data-scroll-anchor-id=${this.eventAnchorKey(startIndex + offset)}>
+              ${toolOnly ? null : this.renderMessageHeader(message, `${String(startIndex)}:${String(offset)}`)}
+              ${message.parts.map((part) => this.renderPart(part, message))}
+            </section>
+          `;
+        })}
+      </div>
     `;
   }
 
@@ -567,7 +621,13 @@ export class ChatView extends LitElement {
   private onGroupToggle(key: string, event: Event, defaultOpen: boolean) {
     const details = event.currentTarget;
     if (!(details instanceof HTMLDetailsElement)) return;
-    if (this.disclosures.applyToggle(key, details.open, defaultOpen)) this.requestUpdate();
+    if (!this.disclosures.applyToggle(key, details.open, defaultOpen)) return;
+    this.scrollElementCacheDirty = true;
+    this.requestUpdate();
+    void this.updateComplete.then(() => {
+      this.refreshScrollElementCache();
+      this.scheduleConversationRailUpdate({ immediate: true });
+    });
   }
 
   private onScroll() {
@@ -675,20 +735,49 @@ export class ChatView extends LitElement {
       cancelAnimationFrame(this.restoreScrollFrame);
       this.restoreScrollFrame = undefined;
     }
-    this.scrollToBottom();
+    if (this.scrollToBottomFrame !== undefined) {
+      cancelAnimationFrame(this.scrollToBottomFrame);
+      this.scrollToBottomFrame = undefined;
+    }
+    this.scrollToBottom({ settle: true });
   }
 
-  private scrollToBottom() {
+  private scrollToBottom(options?: { settle?: boolean | undefined }) {
     if (this.scrollToBottomFrame !== undefined) return;
-    this.scrollToBottomFrame = requestAnimationFrame(() => {
+    const settle = options?.settle === true;
+    const token = settle ? this.prependRestoreToken + 1 : undefined;
+    if (token !== undefined) {
+      this.prependRestoreToken = token;
+      this.suppressLoadMoreRequests = true;
+    }
+    let frames = 0;
+    const apply = () => {
       this.scrollToBottomFrame = undefined;
       const chat = this.chat;
-      if (!chat) return;
+      if (token !== undefined && token !== this.prependRestoreToken) return;
+      if (!chat) {
+        if (token !== undefined) this.suppressLoadMoreRequests = false;
+        return;
+      }
       this.withSuppressedScrollSave(() => {
         chat.scrollTop = chat.scrollHeight;
         this.lastScrollTop = chat.scrollTop;
         this.lastClientHeight = chat.clientHeight;
       });
+      frames += 1;
+      if (settle && frames < PREPEND_RESTORE_SETTLE_FRAMES) {
+        this.scrollToBottomFrame = requestAnimationFrame(apply);
+        return;
+      }
+      if (token !== undefined) {
+        requestAnimationFrame(() => {
+          if (token === this.prependRestoreToken) this.suppressLoadMoreRequests = false;
+        });
+      }
+    };
+    this.scrollToBottomFrame = requestAnimationFrame(() => {
+      this.scrollToBottomFrame = undefined;
+      apply();
     });
   }
 
@@ -810,50 +899,207 @@ export class ChatView extends LitElement {
     });
   }
 
-  private scheduleConversationRailUpdate(): void {
-    if (this.conversationRailFrame !== undefined) return;
-    this.conversationRailFrame = requestAnimationFrame(() => {
-      this.conversationRailFrame = undefined;
-      this.updateConversationRailPosition();
-    });
+  private scheduleConversationRailUpdate(options?: { immediate?: boolean | undefined }): void {
+    if (options?.immediate === true) {
+      if (this.conversationRailTimer !== undefined) {
+        window.clearTimeout(this.conversationRailTimer);
+        this.conversationRailTimer = undefined;
+      }
+      if (this.conversationRailFrame !== undefined) return;
+      this.conversationRailFrame = requestAnimationFrame(() => {
+        this.conversationRailFrame = undefined;
+        this.updateConversationRailPosition();
+      });
+      return;
+    }
+
+    if (this.conversationRailTimer !== undefined || this.conversationRailFrame !== undefined) return;
+    this.conversationRailTimer = window.setTimeout(() => {
+      this.conversationRailTimer = undefined;
+      this.conversationRailFrame = requestAnimationFrame(() => {
+        this.conversationRailFrame = undefined;
+        this.updateConversationRailPosition();
+      });
+    }, CONVERSATION_RAIL_SYNC_THROTTLE_MS);
   }
 
   private updateConversationRailPosition(): void {
     if (!this.messages.length || this.messageTotal <= 0) {
-      this.currentConversationIndex = undefined;
+      this.setCurrentConversationIndex(undefined);
+      this.applyTimelineConversationIndex(undefined);
       return;
     }
     const total = this.conversationDisplayTotal();
     const article = this.firstVisibleArticle();
     const index = Number(article?.dataset["index"]);
-    if (Number.isFinite(index)) {
-      this.currentConversationIndex = clampNumber(index, 0, Math.max(0, total - 1));
+    const conversationIndex = Number.isFinite(index)
+      ? clampNumber(index, 0, Math.max(0, total - 1))
+      : clampNumber(this.pinnedToBottom ? this.messageStart + this.messages.length - 1 : this.messageStart, 0, Math.max(0, total - 1));
+    this.setCurrentConversationIndex(conversationIndex);
+    this.scheduleTimelineConversationIndex(conversationIndex);
+  }
+
+  private setCurrentConversationIndex(index: number | undefined): void {
+    if (this.currentConversationIndex === index) return;
+    this.currentConversationIndex = index;
+  }
+
+  private scheduleTimelineConversationIndex(index: number): void {
+    this.pendingTimelineConversationIndex = index;
+    if (this.currentTimelineUserIndex === undefined) {
+      this.applyPendingTimelineConversationIndex();
       return;
     }
-    this.currentConversationIndex = clampNumber(this.pinnedToBottom ? this.messageStart + this.messages.length - 1 : this.messageStart, 0, Math.max(0, total - 1));
+    if (this.timelineSyncTimer !== undefined) return;
+    this.timelineSyncTimer = window.setTimeout(() => {
+      this.timelineSyncTimer = undefined;
+      this.applyPendingTimelineConversationIndex();
+    }, USER_TIMELINE_SYNC_THROTTLE_MS);
+  }
+
+  private applyPendingTimelineConversationIndex(): void {
+    const index = this.pendingTimelineConversationIndex;
+    this.pendingTimelineConversationIndex = undefined;
+    this.applyTimelineConversationIndex(index);
+  }
+
+  private applyTimelineConversationIndex(index: number | undefined): void {
+    const prompts = this.userPromptTimelinePrompts();
+    if (index === undefined || prompts.length === 0) {
+      if (this.currentTimelineUserIndex !== undefined) this.currentTimelineUserIndex = undefined;
+      if (this.timelineWindowStartIndex !== 0) this.timelineWindowStartIndex = 0;
+      return;
+    }
+
+    const position = this.userPromptTimelinePosition(index, prompts);
+    if (position === undefined) return;
+    const nextWindowStart = this.nextTimelineWindowStart(position.position, prompts.length);
+    if (this.currentTimelineUserIndex !== position.index) this.currentTimelineUserIndex = position.index;
+    if (this.timelineWindowStartIndex !== nextWindowStart) this.timelineWindowStartIndex = nextWindowStart;
+  }
+
+  private userPromptTimelinePosition(index: number, prompts = this.userPromptTimelinePrompts()): { index: number; position: number } | undefined {
+    if (prompts.length === 0) return undefined;
+    let low = 0;
+    let high = prompts.length - 1;
+    let result = 0;
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      const prompt = prompts[mid];
+      if (prompt === undefined) break;
+      if (prompt.index <= index) {
+        result = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    const prompt = prompts[result];
+    return prompt === undefined ? undefined : { index: prompt.index, position: result };
+  }
+
+  private nextTimelineWindowStart(activePosition: number, totalItems: number): number {
+    const currentStart = this.clampedTimelineWindowStart(this.timelineWindowStartIndex, totalItems);
+    if (totalItems <= USER_TIMELINE_VISIBLE_ITEM_COUNT) return 0;
+    const currentEnd = currentStart + USER_TIMELINE_VISIBLE_ITEM_COUNT;
+    const insideStableWindow = activePosition >= currentStart + USER_TIMELINE_EDGE_MARGIN
+      && activePosition < currentEnd - USER_TIMELINE_EDGE_MARGIN;
+    if (insideStableWindow) return currentStart;
+    return this.centeredTimelineWindowStart(activePosition, totalItems);
   }
 
   private scrollMarkers(): HTMLElement[] {
-    return Array.from(this.renderRoot.querySelectorAll<HTMLElement>(".scroll-marker"));
+    this.ensureScrollElementCache();
+    return this.scrollMarkerElementsCache;
   }
 
   private scrollMarkerAt(markerId: string): HTMLElement | undefined {
-    return this.scrollMarkers().find((marker) => marker.dataset["markerId"] === markerId);
+    this.ensureScrollElementCache();
+    return this.scrollMarkerElementsCache.find((marker) => marker.dataset["markerId"] === markerId);
   }
 
   private firstVisibleArticle(): HTMLElement | undefined {
-    const chat = this.chat;
-    if (chat === undefined) return undefined;
-    const primaryArticles = Array.from(this.renderRoot.querySelectorAll<HTMLElement>("article.msg"));
-    return findFirstVisibleArticle(chat, primaryArticles) ?? findFirstVisibleArticle(chat, this.articles());
+    this.ensureScrollElementCache();
+    return this.firstObservedVisibleArticle()
+      ?? this.firstVisibleArticleByRects(this.primaryArticleElementsCache)
+      ?? this.firstVisibleArticleByRects(this.articleElementsCache);
   }
 
   private articles(): HTMLElement[] {
-    return Array.from(this.renderRoot.querySelectorAll<HTMLElement>("article.msg, details.msg"));
+    this.ensureScrollElementCache();
+    return this.articleElementsCache;
   }
 
   private scrollAnchorElements(): HTMLElement[] {
-    return Array.from(this.renderRoot.querySelectorAll<HTMLElement>("[data-scroll-anchor-id]"));
+    this.ensureScrollElementCache();
+    return this.scrollAnchorElementsCache;
+  }
+
+  private ensureScrollElementCache(): void {
+    if (!this.scrollElementCacheDirty) return;
+    this.refreshScrollElementCache();
+  }
+
+  private refreshScrollElementCache(): void {
+    this.primaryArticleElementsCache = Array.from(this.renderRoot.querySelectorAll<HTMLElement>("article.msg"));
+    this.articleElementsCache = Array.from(this.renderRoot.querySelectorAll<HTMLElement>("article.msg, details.msg"));
+    this.scrollAnchorElementsCache = Array.from(this.renderRoot.querySelectorAll<HTMLElement>("[data-scroll-anchor-id]"));
+    this.scrollMarkerElementsCache = Array.from(this.renderRoot.querySelectorAll<HTMLElement>(".scroll-marker"));
+    this.scrollElementCacheDirty = false;
+    this.syncVisibleArticleObserver();
+  }
+
+  private syncVisibleArticleObserver(): void {
+    const chat = this.chat;
+    if (chat === undefined || typeof IntersectionObserver === "undefined") {
+      this.disconnectVisibleArticleObserver();
+      return;
+    }
+
+    this.visibleArticleObserver ??= new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          const element = entry.target;
+          if (!(element instanceof HTMLElement)) continue;
+          const index = Number(element.dataset["index"]);
+          if (!Number.isFinite(index)) continue;
+          if (entry.isIntersecting) this.visibleArticleIndexes.add(index);
+          else this.visibleArticleIndexes.delete(index);
+        }
+        this.scheduleConversationRailUpdate();
+      }, { root: chat, threshold: 0 });
+
+    const nextObserved = new Set(this.articleElementsCache);
+    for (const element of this.observedArticleElements) {
+      if (nextObserved.has(element)) continue;
+      this.visibleArticleObserver.unobserve(element);
+      this.observedArticleElements.delete(element);
+      const index = Number(element.dataset["index"]);
+      if (Number.isFinite(index)) this.visibleArticleIndexes.delete(index);
+    }
+    for (const element of nextObserved) {
+      if (this.observedArticleElements.has(element)) continue;
+      this.visibleArticleObserver.observe(element);
+      this.observedArticleElements.add(element);
+    }
+  }
+
+  private disconnectVisibleArticleObserver(): void {
+    this.visibleArticleObserver?.disconnect();
+    this.visibleArticleObserver = undefined;
+    this.observedArticleElements.clear();
+    this.visibleArticleIndexes.clear();
+  }
+
+  private firstObservedVisibleArticle(): HTMLElement | undefined {
+    if (this.visibleArticleIndexes.size === 0) return undefined;
+    const firstIndex = Math.min(...this.visibleArticleIndexes);
+    return this.articleElementsCache.find((article) => Number(article.dataset["index"]) === firstIndex);
+  }
+
+  private firstVisibleArticleByRects(articles: HTMLElement[]): HTMLElement | undefined {
+    const chat = this.chat;
+    if (chat === undefined || articles.length === 0) return undefined;
+    return findFirstVisibleArticle(chat, articles);
   }
 
   private withSuppressedScrollSave(callback: () => void) {

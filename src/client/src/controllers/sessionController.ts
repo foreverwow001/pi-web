@@ -34,6 +34,7 @@ export class SessionController {
   private catchupStreamSessionId: string | undefined;
   private pendingTranscriptEvents: SessionUiEvent[] = [];
   private pendingTranscriptFrame: number | undefined;
+  private readonly statusTailRefreshTargets = new Map<string, number>();
 
   constructor(
     private readonly getState: GetState,
@@ -398,6 +399,16 @@ export class SessionController {
     }
   }
 
+  async refreshSelectedSessionStatus(sessionId = this.getState().selectedSession?.id): Promise<void> {
+    const session = this.getState().selectedSession;
+    if (sessionId === undefined || session?.id !== sessionId || session.archived === true) return;
+    try {
+      this.applyStatus(await this.api.status(sessionId, selectedMachineId(this.getState())));
+    } catch (error) {
+      if (this.getState().selectedSession?.id === sessionId) this.setState({ error: String(error) });
+    }
+  }
+
   private sessionCacheKey(sessionId: string): string {
     return machineSessionKey(selectedMachineId(this.getState()), sessionId);
   }
@@ -470,6 +481,19 @@ export class SessionController {
       activity: state.selectedSession?.id === status.sessionId && clearsStaleActivity ? undefined : state.activity,
     });
     if (this.catchupStreamSessionId === status.sessionId && !status.isStreaming) this.finishStreamCatchup(status.sessionId);
+    this.refreshTailWhenStatusIsAhead(status, state);
+  }
+
+  private refreshTailWhenStatusIsAhead(status: SessionStatus, previousState: AppState): void {
+    if (status.isStreaming || previousState.selectedSession?.id !== status.sessionId) return;
+    const messageCount = status.messageCount;
+    if (messageCount === undefined || messageCount <= previousState.messagePageTotal) return;
+    const existingTarget = this.statusTailRefreshTargets.get(status.sessionId);
+    if (existingTarget !== undefined && existingTarget >= messageCount) return;
+    this.statusTailRefreshTargets.set(status.sessionId, messageCount);
+    void this.refreshMessages(status.sessionId).finally(() => {
+      if (this.statusTailRefreshTargets.get(status.sessionId) === messageCount) this.statusTailRefreshTargets.delete(status.sessionId);
+    });
   }
 
   private applySessionName(sessionId: string, name: string | undefined) {
