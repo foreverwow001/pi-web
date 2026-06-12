@@ -21,6 +21,7 @@ import {
   MAX_TEXT_ATTACHMENT_BYTES,
 } from "../../../shared/promptAttachments";
 import { machineSessionKey } from "../machineKeys";
+import { detectPromptCompletionTrigger, fileCompletionInsertText, type PromptCompletionTrigger } from "../promptCompletions";
 import { clearDraft, loadDraft, saveDraft } from "../promptDraftStorage";
 import { promptEditorStyles, type CompletionItem } from "./shared";
 import "./AutocompleteMenu";
@@ -205,8 +206,8 @@ export class PromptEditor extends LitElement {
       this.completions = [];
       return;
     }
-    if (trigger.kind === "command" && this.sessionId !== undefined && this.sessionId !== "") {
-      const commands = await api.commands(this.sessionId, this.machineId).catch(emptySlashCommands);
+    if (trigger.kind === "command" && this.sessionId !== undefined && this.sessionId !== "" && this.cwd !== undefined && this.cwd !== "") {
+      const commands = await api.commands({ id: this.sessionId, cwd: this.cwd }, this.machineId).catch(emptySlashCommands);
       if (version !== this.requestVersion) return;
       this.completions = commands
         .filter((command) => command.name.toLowerCase().includes(trigger.query.toLowerCase()))
@@ -225,7 +226,7 @@ export class PromptEditor extends LitElement {
       this.completions = files
         .slice(0, 12)
         .map((file) => {
-          const insertText = fileInsertText(file.path, trigger.quoted === true, file.path.endsWith("/") ? trigger.allPrefix : undefined);
+          const insertText = fileCompletionInsertText(file.path, trigger.quoted === true, file.path.endsWith("/") ? trigger.allPrefix : undefined);
           return {
             kind: "file",
             replaceFrom: trigger.from,
@@ -238,30 +239,8 @@ export class PromptEditor extends LitElement {
     }
   }
 
-  private currentTrigger(): { kind: "command" | "file"; query: string; from: number; to: number; fileScope?: "tracked" | "all" | undefined; allPrefix?: "@ " | "!@" | undefined; quoted?: boolean } | undefined {
-    const cursor = this.editor?.state.selection.main.head ?? this.draft.length;
-    const beforeCursor = this.draft.slice(0, cursor);
-    const quotedTrigger = this.currentQuotedTrigger(beforeCursor, cursor);
-    if (quotedTrigger !== undefined) return quotedTrigger;
-
-    const tokenStart = Math.max(beforeCursor.lastIndexOf(" "), beforeCursor.lastIndexOf("\n")) + 1;
-    const token = beforeCursor.slice(tokenStart);
-    const beforeToken = beforeCursor.slice(0, tokenStart);
-    if (beforeToken.endsWith("@ ")) return { kind: "file", query: token, from: tokenStart - 2, to: cursor, fileScope: "all", allPrefix: "@ " };
-    if (token.startsWith("/") && tokenStart === 0) return { kind: "command", query: token.slice(1), from: tokenStart, to: cursor };
-    if (token.startsWith("!@")) return { kind: "file", query: token.slice(2), from: tokenStart, to: cursor, fileScope: "all", allPrefix: "!@" };
-    if (token.startsWith("@")) return { kind: "file", query: token.slice(1), from: tokenStart, to: cursor, fileScope: "tracked" };
-    return undefined;
-  }
-
-  private currentQuotedTrigger(beforeCursor: string, cursor: number): { kind: "file"; query: string; from: number; to: number; fileScope?: "tracked" | "all" | undefined; allPrefix?: "@ " | "!@" | undefined; quoted: true } | undefined {
-    const quoteStart = beforeCursor.lastIndexOf("\"");
-    if (quoteStart === -1) return undefined;
-    const prefix = beforeCursor.slice(0, quoteStart);
-    if (prefix.endsWith("!@")) return { kind: "file", query: beforeCursor.slice(quoteStart + 1), from: prefix.length - 2, to: cursor, fileScope: "all", allPrefix: "!@", quoted: true };
-    if (prefix.endsWith("@")) return { kind: "file", query: beforeCursor.slice(quoteStart + 1), from: prefix.length - 1, to: cursor, fileScope: "tracked", quoted: true };
-    if (prefix.endsWith("@ ")) return { kind: "file", query: beforeCursor.slice(quoteStart + 1), from: prefix.length - 2, to: cursor, fileScope: "all", allPrefix: "@ ", quoted: true };
-    return undefined;
+  private currentTrigger(): PromptCompletionTrigger | undefined {
+    return detectPromptCompletionTrigger(this.draft, this.editor?.state.selection.main.head ?? this.draft.length);
   }
 
   private moveCompletion(delta: number): boolean {
@@ -442,12 +421,6 @@ function draftStorageKey(machineId: unknown, sessionId: unknown): string | undef
   if (typeof machineId !== "string" || machineId === "") return undefined;
   if (typeof sessionId !== "string" || sessionId === "") return undefined;
   return machineSessionKey(machineId, sessionId);
-}
-
-function fileInsertText(path: string, quoted: boolean, allPrefix?: "@ " | "!@"): string {
-  const prefix = allPrefix ?? "@";
-  if (!quoted && !path.includes(" ")) return `${prefix}${path}`;
-  return `${prefix}"${path}"`;
 }
 
 function emptySlashCommands(): SlashCommand[] {

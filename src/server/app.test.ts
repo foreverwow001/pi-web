@@ -12,6 +12,7 @@ import { MachineService } from "./machines/machineService.js";
 import { MachineStore } from "./machines/machineStore.js";
 import { WorkspaceService } from "./workspaces/workspaceService.js";
 import type { SessionProxyDaemon } from "./sessiond/sessionProxyRoutes.js";
+import { PI_WEB_CAPABILITIES } from "../shared/capabilities.js";
 import { machineScopedPluginId } from "../shared/machinePluginIds.js";
 import { MAX_IMAGE_PREVIEW_BYTES } from "../shared/workspaceFiles.js";
 import type { Project, Workspace } from "./types.js";
@@ -36,22 +37,20 @@ beforeEach(async () => {
         return remoteClient;
       },
       now: () => new Date("2026-05-25T00:00:00.000Z"),
-      localStatus: () => Promise.resolve({
+      localRuntime: () => Promise.resolve({
         packageName: "@jmfederico/pi-web",
         generatedAt: "2026-05-25T00:00:00.000Z",
         components: {
-          web: { component: "web", label: "PI WEB", stale: false, available: true },
-          sessiond: { component: "sessiond", label: "PI WEB Session Daemon", stale: false, available: true },
+          web: { component: "web", label: "PI WEB", available: true, capabilities: [PI_WEB_CAPABILITIES.sessionsDeleteArchived] },
+          sessiond: { component: "sessiond", label: "PI WEB Session Daemon", available: true, capabilities: [PI_WEB_CAPABILITIES.sessionsDeleteArchived] },
         },
-        release: { packageName: "@jmfederico/pi-web", updateAvailable: false },
-        commands: { update: "", restart: "", restartSystemd: "", restartDev: "" },
-        messages: [],
+        capabilities: [PI_WEB_CAPABILITIES.sessionsDeleteArchived],
       }),
     }),
     sessionDaemon: fakeSessionDaemon(),
     piWebPlugins: {
-      manifest: () => Promise.resolve({ plugins: [{ id: "fake", module: "/pi-web-plugins/fake/plugin.js?v=1", source: "test", scope: "local" }] }),
-      plugins: () => Promise.resolve({ plugins: [{ id: "fake", module: "/pi-web-plugins/fake/plugin.js?v=1", source: "test", scope: "local", enabled: true }] }),
+      manifest: () => Promise.resolve({ plugins: [{ id: "fake", module: "/pi-web-plugins/fake/plugin.js?v=1", source: "test", scope: "local", machineSpecific: false }] }),
+      plugins: () => Promise.resolve({ plugins: [{ id: "fake", module: "/pi-web-plugins/fake/plugin.js?v=1", source: "test", scope: "local", machineSpecific: false, enabled: true }] }),
       readAsset: (pluginId, assetPath) => Promise.resolve(pluginId === "fake" && assetPath === "plugin.js" ? { content: Buffer.from("export default {};"), contentType: "application/javascript; charset=utf-8" } : undefined),
     },
     clientDist: false,
@@ -107,6 +106,31 @@ describe("buildApp", () => {
     expect(localHealth.json()).toMatchObject({ machineId: "local", ok: true, status: "online" });
     expect(remoteHealth.statusCode).toBe(200);
     expect(remoteHealth.json()).toMatchObject({ machineId: remote.id, ok: true, status: "online" });
+  });
+
+  it("reports effective machine runtime capabilities for remote machines", async () => {
+    const addResponse = await app.inject({ method: "POST", url: "/api/machines", payload: { name: "Remote", baseUrl: "https://remote.example.test/" } });
+    const remote = addResponse.json<{ id: string }>();
+    const requestJson = vi.fn<MachineClient["requestJson"]>(() => Promise.resolve({
+      statusCode: 200,
+      headers: { "content-type": "application/json" },
+      body: {
+        packageName: "@jmfederico/pi-web",
+        generatedAt: "2026-05-25T00:00:00.000Z",
+        components: {
+          web: { component: "web", label: "Remote Web", runtimeVersion: "1.0.0", available: true, capabilities: [PI_WEB_CAPABILITIES.sessionsDeleteArchived] },
+          sessiond: { component: "sessiond", label: "Remote Sessiond", runtimeVersion: "1.0.0", available: true, capabilities: [PI_WEB_CAPABILITIES.sessionsDeleteArchived] },
+        },
+        capabilities: [PI_WEB_CAPABILITIES.sessionsDeleteArchived],
+      },
+    }));
+    remoteClient = fakeRemoteClient({ requestJson });
+
+    const runtime = await app.inject({ method: "GET", url: `/api/machines/${remote.id}/runtime` });
+
+    expect(runtime.statusCode).toBe(200);
+    expect(runtime.json()).toMatchObject({ machineId: remote.id, ok: true, capabilities: [PI_WEB_CAPABILITIES.sessionsDeleteArchived] });
+    expect(requestJson).toHaveBeenCalledWith("GET", "/api/pi-web/runtime", undefined, { timeoutMs: 3000 });
   });
 
   it("proxies allowlisted remote HTTP routes through the selected machine", async () => {
@@ -297,11 +321,11 @@ describe("buildApp", () => {
   it("serves the PI WEB plugin manifest and plugin assets", async () => {
     const manifestResponse = await app.inject({ method: "GET", url: "/pi-web-plugins/manifest.json" });
     expect(manifestResponse.statusCode).toBe(200);
-    expect(manifestResponse.json()).toEqual({ plugins: [{ id: "fake", module: "/pi-web-plugins/fake/plugin.js?v=1", source: "test", scope: "local" }] });
+    expect(manifestResponse.json()).toEqual({ plugins: [{ id: "fake", module: "/pi-web-plugins/fake/plugin.js?v=1", source: "test", scope: "local", machineSpecific: false }] });
 
     const pluginsResponse = await app.inject({ method: "GET", url: "/api/plugins" });
     expect(pluginsResponse.statusCode).toBe(200);
-    expect(pluginsResponse.json()).toEqual({ plugins: [{ id: "fake", module: "/pi-web-plugins/fake/plugin.js?v=1", source: "test", scope: "local", enabled: true }] });
+    expect(pluginsResponse.json()).toEqual({ plugins: [{ id: "fake", module: "/pi-web-plugins/fake/plugin.js?v=1", source: "test", scope: "local", machineSpecific: false, enabled: true }] });
 
     const assetResponse = await app.inject({ method: "GET", url: "/pi-web-plugins/fake/plugin.js?v=1" });
     expect(assetResponse.statusCode).toBe(200);
@@ -318,7 +342,7 @@ describe("buildApp", () => {
     const requestJson = vi.fn(() => Promise.resolve({
       statusCode: 200,
       headers: { "content-type": "application/json" },
-      body: { plugins: [{ id: "remote-tools", module: "/pi-web-plugins/remote-tools/pi-web-plugin.js?v=123", source: "local", scope: "local" }] },
+      body: { plugins: [{ id: "remote-tools", module: "/pi-web-plugins/remote-tools/pi-web-plugin.js?v=123", source: "local", scope: "local", machineSpecific: true }] },
     }));
     const request = vi.fn(() => Promise.resolve({
       statusCode: 200,
@@ -331,7 +355,7 @@ describe("buildApp", () => {
     const scopedPluginId = machineScopedPluginId(remote.id, "remote-tools");
     expect(manifestResponse.statusCode).toBe(200);
     expect(manifestResponse.json()).toEqual({
-      plugins: [{ id: "remote-tools", module: `/pi-web-plugins/${scopedPluginId}/pi-web-plugin.js?v=123`, source: "local", scope: "local" }],
+      plugins: [{ id: "remote-tools", module: `/pi-web-plugins/${scopedPluginId}/pi-web-plugin.js?v=123`, source: "local", scope: "local", machineSpecific: true }],
     });
     expect(requestJson).toHaveBeenCalledWith("GET", "/pi-web-plugins/manifest.json", undefined, { timeoutMs: 10000 });
 

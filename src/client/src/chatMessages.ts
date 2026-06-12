@@ -55,7 +55,16 @@ export function normalizeMessage(message: unknown): ChatLine[] {
 
   const visible = parts.filter((part) => part.type !== "empty");
   const displayRole = role === "assistant" && visible.length > 0 && visible.every((part) => part.type === "skillRead") ? "skill" : role;
-  return visible.length > 0 ? [withMessageMeta({ role: displayRole, parts: visible, ...(source === undefined ? {} : { source }) }, message)] : [];
+  const lines = visible.length > 0 ? [withMessageMeta({ role: displayRole, parts: visible, ...(source === undefined ? {} : { source }) }, message)] : [];
+  const errorLine = assistantErrorLine(message);
+  return errorLine === undefined ? lines : [...lines, withMessageMeta(errorLine, message)];
+}
+
+function assistantErrorLine(message: unknown): ChatLine | undefined {
+  if (getString(message, "role") !== "assistant" || getString(message, "stopReason") !== "error") return undefined;
+  const errorMessage = getString(message, "errorMessage")?.trim();
+  const detail = errorMessage === undefined || errorMessage === "" ? "The model returned an error." : errorMessage;
+  return textMessage("system", `Model response failed: ${detail}`);
 }
 
 function isChatLine(message: unknown): message is ChatLine {

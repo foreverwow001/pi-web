@@ -124,7 +124,7 @@ export class MachineList extends LitElement implements KeyboardNavigableSection 
       this.openMenuMachineId = undefined;
       return;
     }
-    this.menuStyle = actionMenuPanelStyle(target);
+    this.menuStyle = actionMenuPanelStyle(target, { constrainTo: "viewport" });
     this.openMenuMachineId = machineId;
   }
 

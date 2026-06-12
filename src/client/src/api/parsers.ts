@@ -1,4 +1,5 @@
-import type { ArchiveSessionsResponse, AuthProviderOption, AuthProviderStatus, AuthProvidersResponse, AuthStatusSource, AuthType, CommandOption, CommandResult, FileContentResponse, FileSuggestion, FileTreeEntry, FileTreeResponse, GitDiffResponse, GitFileState, GitStatusFile, GitStatusResponse, Machine, MachineHealth, MachineKind, MachineStatus, MessagePage, ModelSelectionResponse, OAuthFlowState, PiWebComponentStatus, PiWebConfigEnvOverrides, PiWebConfigResponse, PiWebConfigValues, PiWebInstallationInfo, PiWebPluginConfigMap, PiWebPluginInfo, PiWebPluginsResponse, PiWebPluginScope, PiWebReleaseStatus, PiWebServiceComponent, PiWebShortcutConfig, PiWebStatusMessage, PiWebStatusResponse, PiWebStatusSeverity, Project, QueuedSessionMessage, SessionExtensionStatus, SessionInfo, SessionModel, SessionStatus, SlashCommand, TerminalCommandRun, TerminalCommandRunStatus, TerminalInfo, ThinkingLevel, ThinkingLevelsResponse, Workspace, WorkspaceActivity, WorkspaceActivityResponse } from "../../../shared/apiTypes";
+import type { ArchiveSessionsResponse, AuthProviderOption, AuthProviderStatus, AuthProvidersResponse, AuthStatusSource, AuthType, CommandOption, CommandResult, FileContentResponse, FileSuggestion, FileTreeEntry, FileTreeResponse, GitDiffResponse, GitFileState, GitStatusFile, GitStatusResponse, Machine, MachineHealth, MachineKind, MachineRuntime, MachineStatus, MessagePage, ModelSelectionResponse, OAuthFlowState, PiWebCapability, PiWebComponentStatus, PiWebConfigEnvOverrides, PiWebConfigResponse, PiWebConfigValues, PiWebInstallationInfo, PiWebPluginConfigMap, PiWebPluginInfo, PiWebPluginsResponse, PiWebPluginScope, PiWebReleaseStatus, PiWebRuntimeComponent, PiWebRuntimeResponse, PiWebServiceComponent, PiWebShortcutConfig, PiWebStatusMessage, PiWebStatusResponse, PiWebStatusSeverity, Project, QueuedSessionMessage, SessionExtensionStatus, SessionInfo, SessionModel, SessionStatus, SlashCommand, TerminalCommandRun, TerminalCommandRunStatus, TerminalInfo, ThinkingLevel, ThinkingLevelsResponse, Workspace, WorkspaceActivity, WorkspaceActivityResponse } from "../../../shared/apiTypes";
+import { isPiWebCapability } from "../../../shared/capabilities";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -91,6 +92,21 @@ export function parseMachineHealth(value: unknown): MachineHealth {
     ...(status === undefined ? {} : { status }),
     ...(record["web"] === undefined ? {} : { web: parsePiWebComponentStatus(record["web"]) }),
     ...(record["sessiond"] === undefined ? {} : { sessiond: parsePiWebComponentStatus(record["sessiond"]) }),
+    ...(error === undefined ? {} : { error }),
+  };
+}
+
+export function parseMachineRuntime(value: unknown): MachineRuntime {
+  const record = requireRecord(value);
+  const error = optionalString(record, "error");
+  return {
+    machineId: requireString(record, "machineId"),
+    ok: requireBoolean(record, "ok"),
+    checkedAt: requireString(record, "checkedAt"),
+    ...optionalField("packageName", optionalString(record, "packageName")),
+    ...optionalField("generatedAt", optionalString(record, "generatedAt")),
+    ...(record["components"] === undefined ? {} : { components: parsePiWebRuntimeComponents(record["components"]) }),
+    ...(record["capabilities"] === undefined ? {} : { capabilities: parsePiWebCapabilities(record["capabilities"]) }),
     ...(error === undefined ? {} : { error }),
   };
 }
@@ -487,12 +503,19 @@ function parsePiWebPluginInfo(value: unknown): PiWebPluginInfo {
     module: requireString(record, "module"),
     source: requireString(record, "source"),
     scope: parsePiWebPluginScope(record["scope"]),
+    machineSpecific: parseOptionalBoolean(record["machineSpecific"], "machineSpecific") ?? false,
     enabled: requireBoolean(record, "enabled"),
   };
 }
 
 function parsePiWebPluginScope(value: unknown): PiWebPluginScope {
   if (value !== "bundled" && value !== "local" && value !== "user" && value !== "project") throw new Error("Invalid PI WEB plugin scope");
+  return value;
+}
+
+function parseOptionalBoolean(value: unknown, key: string): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "boolean") throw new Error(`Expected optional boolean field: ${key}`);
   return value;
 }
 
@@ -508,9 +531,36 @@ export function parsePiWebStatusResponse(value: unknown): PiWebStatusResponse {
   };
 }
 
+export function parsePiWebRuntimeResponse(value: unknown): PiWebRuntimeResponse {
+  const record = requireRecord(value);
+  return {
+    packageName: requireString(record, "packageName"),
+    generatedAt: requireString(record, "generatedAt"),
+    components: parsePiWebRuntimeComponents(record["components"]),
+    capabilities: parsePiWebCapabilities(record["capabilities"]),
+  };
+}
+
 function parsePiWebComponents(value: unknown): PiWebStatusResponse["components"] {
   const record = requireRecord(value);
   return { web: parsePiWebComponentStatus(record["web"]), sessiond: parsePiWebComponentStatus(record["sessiond"]) };
+}
+
+function parsePiWebRuntimeComponents(value: unknown): PiWebRuntimeResponse["components"] {
+  const record = requireRecord(value);
+  return { web: parsePiWebRuntimeComponent(record["web"]), sessiond: parsePiWebRuntimeComponent(record["sessiond"]) };
+}
+
+function parsePiWebRuntimeComponent(value: unknown): PiWebRuntimeComponent {
+  const record = requireRecord(value);
+  return {
+    component: parsePiWebServiceComponent(record["component"]),
+    label: requireString(record, "label"),
+    ...optionalField("runtimeVersion", optionalString(record, "runtimeVersion")),
+    available: requireBoolean(record, "available"),
+    capabilities: parsePiWebCapabilities(record["capabilities"]),
+    ...optionalField("error", optionalString(record, "error")),
+  };
 }
 
 function parsePiWebComponentStatus(value: unknown): PiWebComponentStatus {
@@ -582,6 +632,11 @@ function parsePiWebServiceComponent(value: unknown): PiWebServiceComponent {
   return value;
 }
 
+function parsePiWebCapabilities(value: unknown): PiWebCapability[] {
+  if (!Array.isArray(value) || !value.every(isPiWebCapability)) throw new Error("Invalid PI WEB capabilities");
+  return value;
+}
+
 function parsePiWebStatusSeverity(value: unknown): PiWebStatusSeverity {
   if (value !== "info" && value !== "warning" && value !== "error") throw new Error("Invalid PI WEB status severity");
   return value;
@@ -647,6 +702,12 @@ export function parseRestored(value: unknown): { restored: true } {
   const record = requireRecord(value);
   if (record["restored"] !== true) throw new Error("Expected restored response");
   return { restored: true };
+}
+
+export function parseDeleted(value: unknown): { deleted: true } {
+  const record = requireRecord(value);
+  if (record["deleted"] !== true) throw new Error("Expected deleted response");
+  return { deleted: true };
 }
 
 export function parseDetached(value: unknown): { detached: true } {

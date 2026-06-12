@@ -406,6 +406,91 @@ describe("PluginRegistry", () => {
     expect(panels.find((panel) => panel.id === `${remotePluginId}:workspace.remote`)?.visible?.(createWorkspacePanelContext("remote-1"))).toBe(false);
     expect(panels.find((panel) => panel.id === "shared-tools:workspace.gateway")?.visible?.(createWorkspacePanelContext("remote-1"))).toBe(true);
     expect(registry.getWorkspaceLabelItems(createWorkspaceLabelContext("remote-1", workspace))).toEqual([{ type: "text", text: "gateway" }]);
+    expect(registry.shouldLoadRemotePlugin("shared-tools")).toBe(false);
+    expect(registry.shouldLoadRemotePlugin("shared-tools", true)).toBe(true);
+  });
+
+  it("uses machine-specific remote duplicates instead of the gateway plugin for that machine", () => {
+    const registry = new PluginRegistry();
+    const workspace = testWorkspace();
+    const remotePluginId = machineScopedPluginId("remote-1", "updates");
+    registry.register({
+      id: "updates",
+      machineSpecific: true,
+      plugin: {
+        apiVersion: 1,
+        name: "Gateway Updates",
+        activate: () => ({
+          contributions: {
+            actions: [{ id: "open", title: "Open Gateway Updates", run: () => undefined }],
+            workspacePanels: [{ id: "workspace.updates", title: "Gateway Updates", render: () => html`<p>Gateway</p>` }],
+            workspaceLabels: [{ id: "label", items: () => [{ type: "text", text: "gateway" }] }],
+          },
+        }),
+      },
+    });
+
+    expect(registry.getActions(createContext().context).map((action) => action.id)).toContain("updates:open");
+    expect(registry.getActions(createContext({ selectedMachine: testMachine("remote-1") }).context).map((action) => action.id)).not.toContain("updates:open");
+    expect(registry.shouldLoadRemotePlugin("updates")).toBe(true);
+
+    registry.register({
+      id: remotePluginId,
+      machineId: "remote-1",
+      sourcePluginId: "updates",
+      plugin: {
+        apiVersion: 1,
+        name: "Remote Updates",
+        activate: () => ({
+          contributions: {
+            actions: [{ id: "open", title: "Open Remote Updates", run: () => undefined }],
+            workspacePanels: [{ id: "workspace.updates", title: "Remote Updates", render: () => html`<p>Remote</p>` }],
+            workspaceLabels: [{ id: "label", items: () => [{ type: "text", text: "remote" }] }],
+          },
+        }),
+      },
+    });
+
+    expect(registry.getActions(createContext().context).map((action) => action.id)).toContain("updates:open");
+    expect(registry.getActions(createContext({ selectedMachine: testMachine("remote-1") }).context).map((action) => action.id)).toEqual([`${remotePluginId}:open`]);
+
+    const panels = registry.getWorkspacePanels();
+    expect(panels.find((panel) => panel.id === "updates:workspace.updates")?.visible?.(createWorkspacePanelContext("local"))).toBe(true);
+    expect(panels.find((panel) => panel.id === "updates:workspace.updates")?.visible?.(createWorkspacePanelContext("remote-1"))).toBe(false);
+    expect(panels.find((panel) => panel.id === `${remotePluginId}:workspace.updates`)?.visible?.(createWorkspacePanelContext("remote-1"))).toBe(true);
+
+    expect(registry.getWorkspaceLabelItems(createWorkspaceLabelContext("local", workspace))).toEqual([{ type: "text", text: "gateway" }]);
+    expect(registry.getWorkspaceLabelItems(createWorkspaceLabelContext("remote-1", workspace))).toEqual([{ type: "text", text: "remote" }]);
+  });
+
+  it("allows a machine-specific remote duplicate to override a portable gateway plugin for that machine", () => {
+    const registry = new PluginRegistry();
+    const remotePluginId = machineScopedPluginId("remote-1", "status-tools");
+    registry.register({
+      id: "status-tools",
+      plugin: {
+        apiVersion: 1,
+        name: "Gateway Status Tools",
+        activate: () => ({ contributions: { actions: [{ id: "open", title: "Open Gateway Status", run: () => undefined }] } }),
+      },
+    });
+
+    expect(registry.shouldLoadRemotePlugin("status-tools")).toBe(false);
+    expect(registry.shouldLoadRemotePlugin("status-tools", true)).toBe(true);
+    registry.register({
+      id: remotePluginId,
+      machineId: "remote-1",
+      sourcePluginId: "status-tools",
+      machineSpecific: true,
+      plugin: {
+        apiVersion: 1,
+        name: "Remote Status Tools",
+        activate: () => ({ contributions: { actions: [{ id: "open", title: "Open Remote Status", run: () => undefined }] } }),
+      },
+    });
+
+    expect(registry.getActions(createContext().context).map((action) => action.id)).toEqual(["status-tools:open"]);
+    expect(registry.getActions(createContext({ selectedMachine: testMachine("remote-1") }).context).map((action) => action.id)).toEqual([`${remotePluginId}:open`]);
   });
 
   it("does not activate remote duplicates when the gateway plugin is already registered", () => {

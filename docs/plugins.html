@@ -191,7 +191,8 @@ After editing, check the manifest endpoint and browser-console failure cases.</c
               <h3>Updates</h3>
               <p>
                 <strong>Updates</strong> adds a conditional <strong>Updates</strong> workspace tab with PI WEB update,
-                restart, and installed-service guidance. It is built into PI WEB and enabled by default.
+                restart, and installed-service guidance. It is built into PI WEB, enabled by default, and uses the
+                selected machine's plugin copy when machine federation is active.
               </p>
               <ul>
                 <li>Plugin id: <code>updates</code></li>
@@ -309,13 +310,18 @@ After editing, check the manifest endpoint and browser-console failure cases.</c
               <ul>
                 <li>File and terminal helpers run against the selected remote machine.</li>
                 <li>Remote plugin code is loaded best-effort through the current gateway and cached for the page lifetime.</li>
-                <li>If the gateway already has an enabled plugin with the same original id, the gateway plugin wins and the remote duplicate stays hidden.</li>
+                <li>If the gateway and remote machine both have an enabled plugin with the same original id, <code>machineSpecific</code> metadata decides whether the gateway copy is reused or only the selected-machine copy can appear.</li>
                 <li>Remote theme contributions are ignored for now because themes are app-wide.</li>
                 <li>Mixed PI WEB versions across federated machines are best-effort and not guaranteed compatible.</li>
               </ul>
               <p>
                 Remote plugin enablement is controlled by the remote machine's PI WEB plugin config. To edit or disable
                 one, open that machine directly or update its config file.
+              </p>
+              <p>
+                Plugin package metadata can set <code>machineSpecific: true</code>. Use it for plugins like Updates whose
+                UI should come from the selected PI WEB instance; on remote machines, the gateway copy is hidden unless
+                the remote machine exposes its own copy.
               </p>
               <p>
                 For portable plugin assets, prefer URLs relative to the plugin module, such as

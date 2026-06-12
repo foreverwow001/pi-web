@@ -14,6 +14,7 @@ export interface PiWebPluginRegistration {
   plugin: PiWebPlugin;
   machineId?: string;
   sourcePluginId?: PluginId;
+  machineSpecific?: boolean;
 }
 
 export interface PiWebPlugin {

@@ -1,6 +1,12 @@
 export type MachineKind = "local" | "remote";
 export type MachineStatus = "unknown" | "online" | "offline" | "error";
 
+export const PI_WEB_CAPABILITIES = {
+  sessionsDeleteArchived: "sessions.deleteArchived",
+} as const;
+
+export type PiWebCapability = typeof PI_WEB_CAPABILITIES[keyof typeof PI_WEB_CAPABILITIES];
+
 export interface Machine {
   id: string;
   name: string;
@@ -19,6 +25,17 @@ export interface MachineHealth {
   status?: MachineStatus;
   web?: PiWebComponentStatus;
   sessiond?: PiWebComponentStatus;
+  error?: string;
+}
+
+export interface MachineRuntime {
+  machineId: string;
+  ok: boolean;
+  checkedAt: string;
+  packageName?: string;
+  generatedAt?: string;
+  components?: PiWebRuntimeResponse["components"];
+  capabilities?: PiWebCapability[];
   error?: string;
 }
 
@@ -47,6 +64,7 @@ export interface PiWebPluginInfo {
   module: string;
   source: string;
   scope: PiWebPluginScope;
+  machineSpecific: boolean;
   enabled: boolean;
 }
 
@@ -86,10 +104,13 @@ export interface Workspace {
   isGitWorktree: boolean;
 }
 
-export interface SessionInfo {
+export interface SessionRef {
   id: string;
-  path: string;
   cwd: string;
+}
+
+export interface SessionInfo extends SessionRef {
+  path: string;
   name?: string;
   created: string;
   modified: string;
@@ -343,6 +364,15 @@ export interface PiWebComponentStatus {
   error?: string;
 }
 
+export interface PiWebRuntimeComponent {
+  component: PiWebServiceComponent;
+  label: string;
+  runtimeVersion?: string;
+  available: boolean;
+  capabilities: PiWebCapability[];
+  error?: string;
+}
+
 export interface PiWebReleaseStatus {
   packageName: string;
   latestVersion?: string;
@@ -367,6 +397,16 @@ export interface PiWebVersionResponse {
     web: PiWebComponentStatus;
     sessiond: PiWebComponentStatus;
   };
+}
+
+export interface PiWebRuntimeResponse {
+  packageName: string;
+  generatedAt: string;
+  components: {
+    web: PiWebRuntimeComponent;
+    sessiond: PiWebRuntimeComponent;
+  };
+  capabilities: PiWebCapability[];
 }
 
 export interface PiWebStatusResponse extends PiWebVersionResponse {

@@ -1,0 +1,187 @@
+import type { Dirent } from "node:fs";
+import { readFile, readdir, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { getAgentDir, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import type { PiSessionListEntry, PiSessionManager, PiSessionManagerGateway } from "./piSessionService.js";
+
+export const PI_SESSION_DIR_ENV = "PI_CODING_AGENT_SESSION_DIR";
+
+type SessionDirSource = "env" | "settings" | "pi-default";
+
+export interface SessionDirResolution {
+  source: SessionDirSource;
+  sessionDir: string;
+  usesConfiguredSessionDir: boolean;
+}
+
+export interface SessionDirResolverOptions {
+  agentDir?: string;
+  env?: NodeJS.ProcessEnv;
+}
+
+export class SessionDirResolver {
+  private readonly agentDir: string;
+  private readonly env: NodeJS.ProcessEnv;
+
+  constructor(options: SessionDirResolverOptions = {}) {
+    this.agentDir = options.agentDir ?? getAgentDir();
+    this.env = options.env ?? process.env;
+  }
+
+  defaultSessionsRoot(): string {
+    return defaultPiSessionsRoot(this.agentDir);
+  }
+
+  resolve(cwd: string): SessionDirResolution {
+    const envSessionDir = this.env[PI_SESSION_DIR_ENV];
+    if (envSessionDir !== undefined && envSessionDir !== "") {
+      return { source: "env", sessionDir: resolveConfiguredPath(envSessionDir, cwd), usesConfiguredSessionDir: true };
+    }
+
+    const settingsSessionDir = SettingsManager.create(cwd, this.agentDir).getSessionDir();
+    if (settingsSessionDir !== undefined && settingsSessionDir !== "") {
+      return { source: "settings", sessionDir: resolveConfiguredPath(settingsSessionDir, cwd), usesConfiguredSessionDir: true };
+    }
+
+    return { source: "pi-default", sessionDir: defaultPiSessionDir(cwd, this.agentDir), usesConfiguredSessionDir: false };
+  }
+}
+
+export type PiSessionManagerGatewayOptions = SessionDirResolverOptions;
+
+export function createPiSessionManagerGateway(options: PiSessionManagerGatewayOptions = {}): PiSessionManagerGateway {
+  return new SettingsAwarePiSessionManagerGateway(new SessionDirResolver(options));
+}
+
+class SettingsAwarePiSessionManagerGateway implements PiSessionManagerGateway {
+  constructor(private readonly resolver: SessionDirResolver) {}
+
+  async list(cwd: string): Promise<PiSessionListEntry[]> {
+    const resolution = this.resolver.resolve(cwd);
+    return filterSessionsForCwd(await listSessionsInDir(resolution.sessionDir), cwd);
+  }
+
+  create(cwd: string): PiSessionManager {
+    const resolution = this.resolver.resolve(cwd);
+    return SessionManager.create(cwd, resolution.sessionDir);
+  }
+
+  listAll(): Promise<PiSessionListEntry[]> {
+    return listSessionsInDefaultPiStore(this.resolver.defaultSessionsRoot());
+  }
+
+  open(path: string): PiSessionManager {
+    return SessionManager.open(path, dirname(path));
+  }
+}
+
+export async function listSessionsInDir(sessionDir: string): Promise<PiSessionListEntry[]> {
+  const sdkSessions = await SessionManager.list("", sessionDir);
+  if (sdkSessions.length > 0) return sdkSessions;
+  return listSessionsInDirFromJsonl(sessionDir);
+}
+
+async function listSessionsInDirFromJsonl(sessionDir: string): Promise<PiSessionListEntry[]> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(sessionDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const sessions = await Promise.all(entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
+    .map(async (entry) => sessionEntryFromJsonl(join(sessionDir, entry.name))));
+  return sessions
+    .filter((entry): entry is PiSessionListEntry => entry !== undefined)
+    .sort((a, b) => b.modified.getTime() - a.modified.getTime());
+}
+
+async function sessionEntryFromJsonl(path: string): Promise<PiSessionListEntry | undefined> {
+  try {
+    const [fileStat, content] = await Promise.all([stat(path), readFile(path, "utf8")]);
+    const lines = content.split(/\r?\n/u).filter((line) => line.trim() !== "");
+    let id = sessionIdFromFilePath(path);
+    let cwd = "";
+    let firstMessage = "";
+    let name: string | undefined;
+    for (const line of lines) {
+      let parsed: unknown;
+      try { parsed = JSON.parse(line); } catch { continue; }
+      if (!isRecord(parsed)) continue;
+      const record = parsed;
+      if (record["type"] === "session") {
+        if (typeof record["id"] === "string" && record["id"] !== "") id = record["id"];
+        if (typeof record["cwd"] === "string" && record["cwd"] !== "") cwd = record["cwd"];
+        if (typeof record["name"] === "string" && record["name"] !== "") name = record["name"];
+      }
+      const message = isRecord(record["message"]) ? record["message"] : undefined;
+      if (firstMessage === "" && message?.["role"] === "user") firstMessage = messageContentText(message["content"]);
+      if (firstMessage === "" && record["role"] === "user") firstMessage = messageContentText(record["content"]);
+    }
+    if (id === "" || cwd === "") return undefined;
+    return { id, path, cwd, created: fileStat.birthtime, modified: fileStat.mtime, messageCount: lines.length, firstMessage, allMessagesText: content, ...(name === undefined ? {} : { name }) };
+  } catch {
+    return undefined;
+  }
+}
+
+export async function listSessionsInDefaultPiStore(storeRoot = defaultPiSessionsRoot()): Promise<PiSessionListEntry[]> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(storeRoot, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const sessionDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => join(storeRoot, entry.name));
+  const sessions = (await Promise.all(sessionDirs.map((dir) => listSessionsInDir(dir)))).flat();
+  return sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
+}
+
+export function filterSessionsForCwd(sessions: readonly PiSessionListEntry[], cwd: string): PiSessionListEntry[] {
+  return sessions.filter((session) => session.cwd === cwd);
+}
+
+export function defaultPiSessionsRoot(agentDir = getAgentDir()): string {
+  return join(agentDir, "sessions");
+}
+
+export function defaultPiSessionDir(cwd: string, agentDir = getAgentDir()): string {
+  return sessionDirInDefaultPiStore(defaultPiSessionsRoot(agentDir), cwd);
+}
+
+export function sessionDirInDefaultPiStore(storeRoot: string, cwd: string): string {
+  const safePath = `--${cwd.replace(/^[/\\]/u, "").replace(/[/\\:]/gu, "-")}--`;
+  return join(storeRoot, safePath);
+}
+
+export function resolveConfiguredPath(path: string, cwd: string): string {
+  const expanded = expandTildePath(path);
+  return isAbsolute(expanded) ? expanded : resolve(cwd, expanded);
+}
+
+function sessionIdFromFilePath(path: string): string {
+  const fileName = path.split(/[\\/]/u).pop()?.replace(/\.jsonl$/u, "") ?? "";
+  const separator = fileName.lastIndexOf("_");
+  return separator >= 0 ? fileName.slice(separator + 1) : fileName;
+}
+
+function messageContentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => isRecord(part) && part["type"] === "text" && typeof part["text"] === "string" ? part["text"] : "")
+    .filter((text) => text !== "")
+    .join("\n");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function expandTildePath(path: string): string {
+  if (path === "~") return homedir();
+  if (path.startsWith("~/")) return join(homedir(), path.slice(2));
+  return path;
+}

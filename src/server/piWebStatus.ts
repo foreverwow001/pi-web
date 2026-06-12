@@ -1,12 +1,14 @@
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { readFile, realpath, stat } from "node:fs/promises";
+import { promisify } from "node:util";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DefaultPackageManager, getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
-import type { PiWebComponentStatus, PiWebInstallationInfo, PiWebReleaseStatus, PiWebServiceComponent, PiWebStatusMessage, PiWebStatusResponse, PiWebVersionResponse } from "../shared/apiTypes.js";
-import { parsePiWebComponentStatus } from "../shared/piWebStatusParsing.js";
+import type { PiWebCapability, PiWebComponentStatus, PiWebInstallationInfo, PiWebReleaseStatus, PiWebRuntimeComponent, PiWebRuntimeResponse, PiWebServiceComponent, PiWebStatusMessage, PiWebStatusResponse, PiWebVersionResponse } from "../shared/apiTypes.js";
+import { effectivePiWebCapabilities, WEB_RUNTIME_CAPABILITIES } from "../shared/capabilities.js";
+import { parsePiWebComponentStatus, parsePiWebRuntimeComponent } from "../shared/piWebStatusParsing.js";
 import { SessionDaemonClient } from "../sessiond/sessionDaemonClient.js";
 
 const PI_WEB_PACKAGE_NAME = "@jmfederico/pi-web";
@@ -31,6 +33,8 @@ interface NativeServiceCommands {
   restartSessiond?: string;
   status?: string;
 }
+
+const execFileAsync = promisify(execFile);
 
 const serviceRefs: Record<ServiceId, NativeServiceRef> = {
   sessiond: {
@@ -61,9 +65,34 @@ interface PackageInfo {
   path: string;
 }
 
+interface PiWebStatusDaemon {
+  request(method: string, path: string, body?: unknown): Promise<{ statusCode: number; headers: Record<string, string>; body: string }>;
+}
+
 let latestReleaseCache: { checkedAtMs: number; latestVersion?: string; error?: string } | undefined;
 
 const runtimePackageInfo = readPackageInfoSync();
+
+export function getPiWebRuntimeComponent(component: PiWebServiceComponent, capabilities: readonly PiWebCapability[] = []): PiWebRuntimeComponent {
+  return {
+    component,
+    label: component === "web" ? "Web/UI" : "Session daemon",
+    runtimeVersion: runtimePackageInfo?.version ?? DEFAULT_VERSION,
+    available: true,
+    capabilities: [...capabilities],
+  };
+}
+
+export async function getPiWebRuntime(daemon: PiWebStatusDaemon = new SessionDaemonClient()): Promise<PiWebRuntimeResponse> {
+  const web = getPiWebRuntimeComponent("web", WEB_RUNTIME_CAPABILITIES);
+  const sessiond = await getSessiondRuntimeComponent(daemon);
+  return {
+    packageName: PI_WEB_PACKAGE_NAME,
+    generatedAt: new Date().toISOString(),
+    components: { web, sessiond },
+    capabilities: effectivePiWebCapabilities({ web, sessiond }),
+  };
+}
 
 export async function getPiWebComponentStatus(component: PiWebServiceComponent): Promise<PiWebComponentStatus> {
   const [installed, installation] = await Promise.all([
@@ -83,7 +112,7 @@ export async function getPiWebComponentStatus(component: PiWebServiceComponent):
   };
 }
 
-export async function getPiWebVersionStatus(daemon = new SessionDaemonClient()): Promise<PiWebVersionResponse> {
+export async function getPiWebVersionStatus(daemon: PiWebStatusDaemon = new SessionDaemonClient()): Promise<PiWebVersionResponse> {
   const [web, sessiond] = await Promise.all([
     getPiWebComponentStatus("web"),
     getSessiondComponentStatus(daemon),
@@ -95,12 +124,12 @@ export async function getPiWebVersionStatus(daemon = new SessionDaemonClient()):
   };
 }
 
-export async function getPiWebStatus(daemon = new SessionDaemonClient()): Promise<PiWebStatusResponse> {
+export async function getPiWebStatus(daemon: PiWebStatusDaemon = new SessionDaemonClient()): Promise<PiWebStatusResponse> {
   const versionStatus = await getPiWebVersionStatus(daemon);
   const { web, sessiond } = versionStatus.components;
   const release = await getLatestReleaseStatus(web.installedVersion ?? web.runtimeVersion ?? DEFAULT_VERSION);
   const components = { web, sessiond };
-  const commands = commandsFor(components);
+  const commands = await commandsFor(components);
   const messages = buildMessages(components, release, commands);
   return {
     ...versionStatus,
@@ -187,18 +216,21 @@ async function detectPiPackageInstallation(realRoot: string, displayPath: string
 }
 
 async function detectNpmGlobalInstallation(realRoot: string, displayPath: string): Promise<PiWebInstallationInfo | undefined> {
-  const npmRoot = npmGlobalRoot();
+  const npmRoot = await npmGlobalRoot();
   if (npmRoot === undefined) return undefined;
   const realNpmRoot = await realPathOrSelf(npmRoot);
   if (!isSameOrWithin(realNpmRoot, realRoot)) return undefined;
   return { kind: "npm-global", path: displayPath, npmRoot };
 }
 
-function npmGlobalRoot(): string | undefined {
-  const result = spawnSync("npm", ["root", "-g"], { encoding: "utf8" });
-  if (result.status !== 0) return undefined;
-  const root = result.stdout.trim();
-  return root === "" ? undefined : root;
+async function npmGlobalRoot(): Promise<string | undefined> {
+  try {
+    const { stdout } = await execFileAsync("npm", ["root", "-g"], { encoding: "utf8" });
+    const root = stdout.trim();
+    return root === "" ? undefined : root;
+  } catch {
+    return undefined;
+  }
 }
 
 function packageRootPath(): string {
@@ -214,19 +246,76 @@ function isSameOrWithin(parent: string, candidate: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !rel.startsWith(sep));
 }
 
-async function getSessiondComponentStatus(daemon: SessionDaemonClient): Promise<PiWebComponentStatus> {
+async function getSessiondRuntimeComponent(daemon: PiWebStatusDaemon): Promise<PiWebRuntimeComponent> {
   try {
-    const upstream = await daemon.request("GET", "/health");
+    const upstream = await daemon.request("GET", "/runtime");
     if (upstream.statusCode < 200 || upstream.statusCode >= 300) {
-      return unavailableSessiond(`health check returned HTTP ${String(upstream.statusCode)}`);
+      return await legacySessiondRuntimeComponent(daemon) ?? unavailableSessiondRuntime(`runtime check returned HTTP ${String(upstream.statusCode)}`);
     }
     const parsed: unknown = upstream.body === "" ? undefined : JSON.parse(upstream.body);
-    const version = isRecord(parsed) ? parsed["version"] : undefined;
-    const component = parsePiWebComponentStatus(version);
-    return component ?? unavailableSessiond("health response did not include version information");
+    const runtime = parsePiWebRuntimeComponent(parsed);
+    if (runtime !== undefined) return runtime;
+    const legacyVersion = isRecord(parsed) ? parsePiWebComponentStatus(parsed["version"]) : undefined;
+    if (legacyVersion !== undefined) return runtimeComponentFromStatus(legacyVersion);
+    return await legacySessiondRuntimeComponent(daemon) ?? unavailableSessiondRuntime("runtime response did not include valid runtime information");
+  } catch (error) {
+    return unavailableSessiondRuntime(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function getSessiondComponentStatus(daemon: PiWebStatusDaemon): Promise<PiWebComponentStatus> {
+  try {
+    const upstream = await daemon.request("GET", "/runtime");
+    if (upstream.statusCode < 200 || upstream.statusCode >= 300) {
+      return await legacySessiondComponentStatus(daemon) ?? unavailableSessiond(`runtime check returned HTTP ${String(upstream.statusCode)}`);
+    }
+    const parsed: unknown = upstream.body === "" ? undefined : JSON.parse(upstream.body);
+    const legacyVersion = isRecord(parsed) ? parsePiWebComponentStatus(parsed["version"]) : undefined;
+    if (legacyVersion !== undefined) return legacyVersion;
+    const runtime = parsePiWebRuntimeComponent(parsed);
+    if (runtime?.available !== true) return await legacySessiondComponentStatus(daemon) ?? unavailableSessiond(runtime?.error ?? "runtime response did not include valid runtime information");
+    const status = await getPiWebComponentStatus("sessiond");
+    return { ...status, ...(runtime.runtimeVersion === undefined ? {} : { runtimeVersion: runtime.runtimeVersion }), available: true };
   } catch (error) {
     return unavailableSessiond(error instanceof Error ? error.message : String(error));
   }
+}
+
+async function legacySessiondRuntimeComponent(daemon: PiWebStatusDaemon): Promise<PiWebRuntimeComponent | undefined> {
+  const status = await legacySessiondComponentStatus(daemon);
+  return status === undefined ? undefined : runtimeComponentFromStatus(status);
+}
+
+async function legacySessiondComponentStatus(daemon: PiWebStatusDaemon): Promise<PiWebComponentStatus | undefined> {
+  try {
+    const upstream = await daemon.request("GET", "/health");
+    if (upstream.statusCode < 200 || upstream.statusCode >= 300) return undefined;
+    const parsed: unknown = upstream.body === "" ? undefined : JSON.parse(upstream.body);
+    return isRecord(parsed) ? parsePiWebComponentStatus(parsed["version"]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function runtimeComponentFromStatus(status: PiWebComponentStatus): PiWebRuntimeComponent {
+  return {
+    component: status.component,
+    label: status.label,
+    ...(status.runtimeVersion === undefined ? {} : { runtimeVersion: status.runtimeVersion }),
+    available: status.available,
+    capabilities: [],
+    ...(status.error === undefined ? {} : { error: status.error }),
+  };
+}
+
+function unavailableSessiondRuntime(error: string): PiWebRuntimeComponent {
+  return {
+    component: "sessiond",
+    label: "Session daemon",
+    available: false,
+    capabilities: [],
+    error,
+  };
 }
 
 function unavailableSessiond(error: string): PiWebComponentStatus {
@@ -282,15 +371,17 @@ async function fetchLatestNpmVersion(currentVersion: string): Promise<string> {
   return version;
 }
 
-function commandsFor(components: PiWebStatusResponse["components"]): PiWebStatusResponse["commands"] {
+async function commandsFor(components: PiWebStatusResponse["components"]): Promise<PiWebStatusResponse["commands"]> {
   const installation = preferredInstallation(components);
-  const serviceCommands = nativeServiceCommands();
-  const cliCommands = piWebCliCommands(installation);
+  const [serviceCommands, cliCommands] = await Promise.all([
+    nativeServiceCommands(),
+    piWebCliCommands(installation),
+  ]);
   const restart = restartCommandFor(installation, serviceCommands, cliCommands);
   const restartWeb = serviceCommands.restartWeb ?? cliCommands.restart;
   const restartSessiond = serviceCommands.restartSessiond ?? cliCommands.restart;
   const status = serviceCommands.status ?? cliCommands.status;
-  const update = updateCommandFor(installation, restart);
+  const update = await updateCommandFor(installation, restart);
 
   return {
     ...(update === undefined ? {} : { update }),
@@ -308,8 +399,8 @@ function preferredInstallation(components: PiWebStatusResponse["components"]): P
   return web ?? sessiond;
 }
 
-function piWebCliCommands(installation: PiWebInstallationInfo | undefined): NativeServiceCommands {
-  if (installation?.kind !== "npm-global" || !hasCommand("pi-web")) return {};
+async function piWebCliCommands(installation: PiWebInstallationInfo | undefined): Promise<NativeServiceCommands> {
+  if (installation?.kind !== "npm-global" || !(await hasCommand("pi-web"))) return {};
   return { restart: "pi-web restart", status: "pi-web status" };
 }
 
@@ -318,22 +409,22 @@ function restartCommandFor(installation: PiWebInstallationInfo | undefined, serv
   return cliCommands.restart ?? serviceCommands.restart;
 }
 
-function updateCommandFor(installation: PiWebInstallationInfo | undefined, restartCommand: string | undefined): string | undefined {
+async function updateCommandFor(installation: PiWebInstallationInfo | undefined, restartCommand: string | undefined): Promise<string | undefined> {
   if (restartCommand === undefined) return undefined;
   if (installation?.kind === "pi-package") {
-    if (!hasCommand("pi")) return undefined;
+    if (!(await hasCommand("pi"))) return undefined;
     return `pi update ${installation.source ?? PI_WEB_NPM_SOURCE} && ${restartCommand}`;
   }
   if (installation?.kind === "local" && installation.path !== undefined) {
-    if (!hasCommand("npm") || !isGitCheckoutWithUpstream(installation.path)) return undefined;
+    if (!(await hasCommand("npm")) || !(await isGitCheckoutWithUpstream(installation.path))) return undefined;
     return `cd ${shellQuote(installation.path)} && git pull --ff-only && npm install && npm run build && ${restartCommand}`;
   }
-  if (installation?.kind !== "npm-global" || !hasCommand("npm")) return undefined;
+  if (installation?.kind !== "npm-global" || !(await hasCommand("npm"))) return undefined;
   return `npm install -g ${PI_WEB_PACKAGE_NAME} && ${restartCommand}`;
 }
 
-function nativeServiceCommands(): NativeServiceCommands {
-  const backend = nativeServiceBackend();
+async function nativeServiceCommands(): Promise<NativeServiceCommands> {
+  const backend = await nativeServiceBackend();
   if (backend === undefined) return {};
   const installed = installedServiceIds(backend);
   if (installed.size === 0) return {};
@@ -349,9 +440,9 @@ function nativeServiceCommands(): NativeServiceCommands {
   };
 }
 
-function nativeServiceBackend(): NativeServiceBackendKind | undefined {
-  if (process.platform === "linux" && hasCommand("systemctl")) return "systemd";
-  if (process.platform === "darwin" && hasCommand("launchctl")) return "launchd";
+async function nativeServiceBackend(): Promise<NativeServiceBackendKind | undefined> {
+  if (process.platform === "linux" && await hasCommand("systemctl")) return "systemd";
+  if (process.platform === "darwin" && await hasCommand("launchctl")) return "launchd";
   return undefined;
 }
 
@@ -385,19 +476,23 @@ function statusNativeServicesCommand(backend: NativeServiceBackendKind, refs: Na
   return refs.map((ref) => `launchctl print gui/$(id -u)/${ref.launchdLabel}`).join(" && ");
 }
 
-function isGitCheckoutWithUpstream(path: string): boolean {
-  return hasCommand("git")
-    && commandSucceeds("git", ["-C", path, "rev-parse", "--is-inside-work-tree"])
-    && commandSucceeds("git", ["-C", path, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
+async function isGitCheckoutWithUpstream(path: string): Promise<boolean> {
+  return await hasCommand("git")
+    && await commandSucceeds("git", ["-C", path, "rev-parse", "--is-inside-work-tree"])
+    && await commandSucceeds("git", ["-C", path, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
 }
 
-function hasCommand(command: string): boolean {
+function hasCommand(command: string): Promise<boolean> {
   return commandSucceeds("/usr/bin/env", ["sh", "-c", `command -v ${command}`]);
 }
 
-function commandSucceeds(command: string, args: string[]): boolean {
-  const result = spawnSync(command, args, { encoding: "utf8" });
-  return result.status === 0;
+async function commandSucceeds(command: string, args: string[]): Promise<boolean> {
+  try {
+    await execFileAsync(command, args, { encoding: "utf8" });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function shellQuote(value: string): string {
