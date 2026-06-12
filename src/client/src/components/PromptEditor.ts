@@ -28,6 +28,11 @@ import "./AutocompleteMenu";
 import "./PromptAttachmentBar";
 
 const ATTACHMENT_ACCEPT = ".txt,.md,.html,.csv,.pdf,.docx,.doc,.xlsx,.xls,.png,.jpg,.jpeg,.webp,.gif,text/plain,text/markdown,text/html,text/csv,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,image/*";
+const MOBILE_ENTER_NEWLINE_QUERIES = ["(hover: none)", "(pointer: coarse)", "(display-mode: standalone)", "(display-mode: fullscreen)", "(display-mode: minimal-ui)"];
+
+export function shouldUseMobileEnterNewline(matchMedia: (query: string) => Pick<MediaQueryList, "matches"> = window.matchMedia.bind(window)): boolean {
+  return MOBILE_ENTER_NEWLINE_QUERIES.some((query) => matchMedia(query).matches);
+}
 
 @customElement("prompt-editor")
 export class PromptEditor extends LitElement {
@@ -156,7 +161,10 @@ export class PromptEditor extends LitElement {
           indentUnit.of("  "),
           syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
           EditorView.lineWrapping,
-          EditorView.domEventHandlers({ paste: (event) => this.handlePaste(event) }),
+          EditorView.domEventHandlers({
+            paste: (event) => this.handlePaste(event),
+            beforeinput: (event) => this.handleBeforeInput(event),
+          }),
           EditorView.contentAttributes.of((view) => inputAssistanceContentAttributes(view.state.sliceDoc(0, view.state.selection.main.head))),
           placeholder("Message pi... Use / for commands, @ for tracked files, @ space for all files"),
           this.editableCompartment.of(EditorView.editable.of(!this.disabled)),
@@ -168,7 +176,7 @@ export class PromptEditor extends LitElement {
             { key: "ArrowDown", run: () => this.moveCompletion(1) },
             { key: "ArrowUp", run: () => this.moveCompletion(-1) },
             { key: "Escape", run: () => this.closeCompletions() },
-            { key: "Enter", run: () => this.handleEditorEnter() },
+            { key: "Enter", run: (view) => this.handleEditorEnter(view) },
             { key: "Shift-Enter", run: (view) => insertNewlineContinueMarkup(view) || insertNewlineAndIndent(view) },
             { key: "Tab", run: (view) => this.handleEditorTab(view) },
             { key: "Shift-Tab", run: (view) => indentWithTab.shift?.(view) ?? false },
@@ -265,7 +273,8 @@ export class PromptEditor extends LitElement {
     return true;
   }
 
-  private handleEditorEnter(): boolean {
+  private handleEditorEnter(view: EditorView): boolean {
+    if (this.useMobileEnterNewline()) return this.insertEditorNewline(view);
     if (this.completions.length) {
       const completion = this.completions[this.selectedIndex];
       if (completion !== undefined) this.pick(completion);
@@ -273,6 +282,22 @@ export class PromptEditor extends LitElement {
     }
     this.send(this.canSteer || this.isCompacting ? "followUp" : undefined);
     return true;
+  }
+
+  private handleBeforeInput(event: InputEvent): boolean {
+    if (event.inputType !== "insertLineBreak" || !this.useMobileEnterNewline()) return false;
+    const editor = this.editor;
+    if (editor === undefined) return false;
+    event.preventDefault();
+    return this.insertEditorNewline(editor);
+  }
+
+  private insertEditorNewline(view: EditorView): boolean {
+    return insertNewlineContinueMarkup(view) || insertNewlineAndIndent(view);
+  }
+
+  private useMobileEnterNewline(): boolean {
+    return shouldUseMobileEnterNewline();
   }
 
   private handleEditorTab(view: EditorView): boolean {
