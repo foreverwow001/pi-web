@@ -63,6 +63,7 @@ export class ChatView extends LitElement {
   @property({ attribute: false }) status?: SessionStatus;
   @property({ attribute: false }) activity?: SessionActivity;
   @property({ attribute: false }) onLoadMore?: () => void;
+  @property({ attribute: false }) onContinueFromLastToolResult?: () => void;
   @query(".chat") private chat?: HTMLDivElement;
   @state() private pinnedToBottom = true;
   @state() private expandedMetaKey: string | undefined;
@@ -206,6 +207,7 @@ export class ChatView extends LitElement {
           )}
           ${this.renderQueuedMessages()}
           ${this.renderSessionActivity()}
+          ${this.renderWorkflowPauseNotice()}
         </div>
         ${this.renderActivityDock()}
       </div>
@@ -260,6 +262,28 @@ export class ChatView extends LitElement {
         `)}
       </aside>
     `;
+  }
+
+  private renderWorkflowPauseNotice() {
+    if (!this.isPausedAfterToolResult()) return null;
+    return html`
+      <aside class="workflow-pause-notice" aria-live="polite">
+        <div>
+          <strong>Workflow paused after tool output</strong>
+          <span>The session is idle with no pending gate. If this was a formal workflow, continue from the last retained tool result instead of rerunning earlier steps.</span>
+        </div>
+        <button type="button" @click=${() => this.onContinueFromLastToolResult?.()}>Continue from last tool result</button>
+      </aside>
+    `;
+  }
+
+  private isPausedAfterToolResult(): boolean {
+    if (this.status?.isStreaming === true || this.status?.isCompacting === true || this.status?.isBashRunning === true) return false;
+    if ((this.status?.pendingMessageCount ?? 0) > 0) return false;
+    if (this.isReceivingPartialStream || this.loadingMore) return false;
+    const lastMessage = this.messages.at(-1);
+    if (lastMessage === undefined) return false;
+    return lastMessage.role === "tool" || lastMessage.parts.some((part) => part.type === "toolResult" || part.type === "toolExecution");
   }
 
   private renderSessionActivity() {

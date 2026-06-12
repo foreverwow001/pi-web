@@ -312,6 +312,13 @@ export const chatStyles = css`
   .queued-message:first-of-type { padding-top: 0; border-top: 0; }
   .queued-kind { color: var(--pi-muted); font-size: 12px; text-transform: uppercase; }
   .session-activity { max-width: 100%; min-width: 0; box-sizing: border-box; display: grid; gap: 4px; margin: 0 0 14px; padding: 12px; border: 1px solid var(--pi-border); border-radius: 10px; background: var(--pi-surface); color: var(--pi-text); overflow: hidden; }
+  .workflow-pause-notice { max-width: 100%; min-width: 0; box-sizing: border-box; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 14px; padding: 12px; border: 1px solid var(--pi-warning-border); border-radius: 10px; background: var(--pi-warning-surface); color: var(--pi-text); overflow: hidden; }
+  .workflow-pause-notice div { min-width: 0; display: grid; gap: 4px; }
+  .workflow-pause-notice strong { color: var(--pi-warning); }
+  .workflow-pause-notice span { color: var(--pi-muted); }
+  .workflow-pause-notice button { flex: 0 0 auto; border: 1px solid var(--pi-warning-border); border-radius: 999px; background: var(--pi-bg); color: var(--pi-text); padding: 6px 10px; font: 12px system-ui, sans-serif; cursor: pointer; }
+  .workflow-pause-notice button:hover, .workflow-pause-notice button:focus { border-color: var(--pi-accent); color: var(--pi-text-bright); }
+  @media (max-width: 760px) { .workflow-pause-notice { align-items: stretch; flex-direction: column; } .workflow-pause-notice button { width: 100%; } }
   .session-activity.compacting { border-color: var(--pi-purple-border); background: var(--pi-purple-surface); }
   .session-activity.receiving { border-color: var(--pi-success-border); background: var(--pi-success-bg); }
   .session-activity strong { color: var(--pi-purple); }
