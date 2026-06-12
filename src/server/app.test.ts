@@ -206,6 +206,17 @@ describe("buildApp", () => {
     expect(request).toHaveBeenCalledWith("POST", "/api/projects/p1/workspaces/w1/terminal-command-runs", createBody);
   });
 
+  it("accepts image-sized prompt payloads above Fastify's default 1 MB body limit", async () => {
+    const largeText = "x".repeat(2 * 1024 * 1024);
+
+    const response = await app.inject({ method: "POST", url: "/api/machines/local/sessions/s1/prompt", payload: { text: largeText } });
+
+    expect(response.statusCode).toBe(200);
+    expect(sessionDaemonRequests).toHaveLength(1);
+    const body = sessionDaemonRequests[0]?.body;
+    expect(body).toMatchObject({ text: largeText });
+  });
+
   it("forwards remote JSON request bodies and normalizes remote timeouts", async () => {
     const addResponse = await app.inject({ method: "POST", url: "/api/machines", payload: { name: "Remote", baseUrl: "https://remote.example.test/" } });
     const remote = addResponse.json<{ id: string }>();

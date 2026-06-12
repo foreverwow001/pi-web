@@ -151,6 +151,17 @@ export interface SessionModel {
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
+export type IvyhouseFooterMode = "default" | "build" | "plan";
+export type IvyhouseFastOverride = "auto" | "on" | "off";
+
+export interface IvyhouseFooterControlsResponse {
+  cwd: string;
+  mode: IvyhouseFooterMode;
+  fastOverride: IvyhouseFastOverride;
+  fastEnabled: boolean;
+  stateFile: string;
+}
+
 export type AuthType = "oauth" | "api_key";
 export type AuthStatusSource = "stored" | "runtime" | "environment" | "fallback" | "models_json_key" | "models_json_command";
 

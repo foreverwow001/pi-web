@@ -462,10 +462,16 @@ export const promptEditorStyles = css`
   .editor-wrap { position: relative; min-width: 0; }
   .drop-overlay { position: absolute; inset: 0; z-index: 12; display: grid; place-items: center; border: 2px dashed var(--pi-accent); border-radius: 10px; background: color-mix(in srgb, var(--pi-bg) 78%, transparent); color: var(--pi-accent); font-weight: 700; pointer-events: none; }
   .actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: nowrap; white-space: nowrap; }
-  .compact-status { display: flex; min-width: 0; align-items: center; gap: 6px; color: var(--pi-muted); font-size: 12px; flex: 1 1 0; }
-  .compact-status > button { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  .select-model { max-width: min(42vw, 320px); }
+  .compact-status { display: flex; min-width: 0; align-items: center; gap: 6px; color: var(--pi-muted); font-size: 12px; }
+  .status-primary { flex: 1 1 0; }
+  .status-secondary { flex: 0 0 auto; }
+  .compact-status > button, .compact-status > select { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .select-mode { max-width: 128px; }
+  .select-model { flex: 1 1 auto; max-width: min(34vw, 300px); }
   .select-thinking { max-width: 110px; }
+  .fast-toggle.fast-on { border-color: var(--pi-accent); color: var(--pi-accent); background: color-mix(in srgb, var(--pi-accent) 12%, var(--pi-surface)); }
+  .file-input { display: none; }
+  .attach-button { font-size: 16px; line-height: 1; min-width: 36px; }
   .status-pill { flex: 0 0 auto; max-width: 88px; overflow: hidden; text-overflow: ellipsis; border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-text); padding: 7px 9px; }
   textarea, .markdown-editor .cm-editor { box-sizing: border-box; width: 100%; min-height: 54px; max-height: 220px; resize: none; overflow: hidden; border-radius: 8px; border: 1px solid var(--pi-border); background: var(--pi-bg); color: var(--pi-text); font: 16px/1.4 system-ui, sans-serif; }
   textarea { overflow-y: auto; padding: 8px; }
@@ -476,20 +482,30 @@ export const promptEditorStyles = css`
   .markdown-editor .cm-focused { outline: none; }
   .shell-mode textarea, .shell-mode .markdown-editor .cm-editor { border-color: var(--pi-success); box-shadow: 0 0 0 1px var(--pi-success-ring); }
   .mode-hint { position: absolute; right: 8px; bottom: 8px; max-width: calc(100% - 16px); border: 1px solid var(--pi-success-border); border-radius: 999px; background: var(--pi-success-surface); color: var(--pi-success); padding: 2px 8px; font-size: 12px; pointer-events: none; }
-  button { border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-text); padding: 7px 9px; cursor: pointer; }
-  button:disabled, textarea:disabled, .markdown-editor-disabled .cm-editor { opacity: .5; cursor: not-allowed; }
+  button, select { border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-text); padding: 7px 9px; cursor: pointer; }
+  button:disabled, select:disabled, textarea:disabled, .markdown-editor-disabled .cm-editor { opacity: .5; cursor: not-allowed; }
   @media (max-width: 640px) {
     footer { gap: 8px; padding: 8px; }
-    .actions { gap: 6px; }
-    .compact-status { flex: 1 1 220px; gap: 4px; }
-    .select-model { max-width: min(58vw, 260px); }
-    button { padding: 6px 8px; }
+    .actions { gap: 6px; justify-content: flex-start; flex-wrap: wrap; }
+    .compact-status { gap: 4px; }
+    .status-primary { flex: 1 0 100%; order: 0; }
+    .status-secondary { flex: 1 1 auto; order: 1; }
+    .file-input { order: 2; }
+    .attach-button { order: 3; }
+    .actions > button:not(.select-model):not(.select-thinking):not(.fast-toggle):not(.attach-button) { order: 4; }
+    .select-mode { flex: 0 0 auto; max-width: 118px; }
+    .select-model { flex: 1 1 auto; max-width: none; }
+    .select-thinking { max-width: 120px; }
+    .fast-toggle { max-width: 72px; overflow: hidden; text-overflow: ellipsis; }
+    button, select { padding: 6px 8px; }
   }
   @media (max-width: 430px) {
-    .compact-status { flex-basis: 170px; font-size: 11px; }
-    .select-model { max-width: 48vw; }
-    .select-thinking { max-width: 70px; }
-    button { padding: 5px 7px; }
+    .compact-status { font-size: 11px; }
+    .select-mode { max-width: 112px; }
+    .select-thinking { max-width: 86px; }
+    .fast-toggle { max-width: 56px; }
+    .attach-button { min-width: 34px; }
+    button, select { padding: 5px 7px; }
   }
 `;
 

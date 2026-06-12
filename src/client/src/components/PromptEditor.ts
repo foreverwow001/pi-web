@@ -5,9 +5,9 @@ import { EditorView, keymap, placeholder } from "@codemirror/view";
 import { defaultHighlightStyle, indentOnInput, indentUnit, syntaxHighlighting } from "@codemirror/language";
 import { LitElement, html, type PropertyValues } from "lit";
 import { customElement, property, query, state } from "lit/decorators.js";
-import { api, type FileSuggestion, type SessionStatus, type SlashCommand } from "../api";
+import { api, type FileSuggestion, type IvyhouseFooterControlsResponse, type IvyhouseFooterMode, type SessionStatus, type SlashCommand } from "../api";
 import { inputModeForDraft } from "../inputModes";
-import type { PromptAttachmentPayload } from "../../../shared/promptAttachments";
+import type { PromptAttachmentPayload, PromptAttachmentSource } from "../../../shared/promptAttachments";
 import {
   extensionFromFilename,
   isDocumentAttachmentExtension,
@@ -27,6 +27,8 @@ import { promptEditorStyles, type CompletionItem } from "./shared";
 import "./AutocompleteMenu";
 import "./PromptAttachmentBar";
 
+const ATTACHMENT_ACCEPT = ".txt,.md,.html,.csv,.pdf,.docx,.doc,.xlsx,.xls,.png,.jpg,.jpeg,.webp,.gif,text/plain,text/markdown,text/html,text/csv,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,image/*";
+
 @customElement("prompt-editor")
 export class PromptEditor extends LitElement {
   @property({ type: Boolean }) disabled = false;
@@ -42,9 +44,11 @@ export class PromptEditor extends LitElement {
   @property({ attribute: false }) onSelectModel?: () => void;
   @property({ attribute: false }) onSelectThinking?: () => void;
   @query(".markdown-editor") private editorHost?: HTMLDivElement;
+  @query(".file-input") private fileInput?: HTMLInputElement;
   @state() private draft = "";
   @state() private completions: CompletionItem[] = [];
   @state() private attachments: PromptAttachmentPayload[] = [];
+  @state() private footerControls: IvyhouseFooterControlsResponse | undefined;
   @state() private isDraggingFile = false;
   @state() private selectedIndex = 0;
   private requestVersion = 0;
@@ -68,11 +72,13 @@ export class PromptEditor extends LitElement {
 
   override firstUpdated(): void {
     this.createEditor();
+    void this.refreshFooterControls();
   }
 
   protected override updated(changed: PropertyValues) {
     if (changed.has("disabled")) this.updateEditorDisabledState();
     if (changed.has("draft") || changed.has("sessionId") || changed.has("machineId")) this.syncEditorDoc();
+    if (changed.has("cwd")) void this.refreshFooterControls();
   }
 
   override disconnectedCallback(): void {
@@ -102,6 +108,8 @@ export class PromptEditor extends LitElement {
         </div>
         <div class="actions">
           ${this.renderCompactStatus()}
+          <input class="file-input" type="file" multiple accept=${ATTACHMENT_ACCEPT} @change=${(event: Event) => { void this.handleFileInputChange(event); }} />
+          <button class="attach-button" ?disabled=${this.disabled} title="Attach files" aria-label="Attach files" @click=${() => { this.openFilePicker(); }}>📎</button>
           <button ?disabled=${this.disabled} title=${queuesInput ? "Queue until the current activity finishes" : "Send message"} @click=${() => { this.send("followUp"); }}>${queuesInput ? "Queue" : "Send"}</button>
           ${this.canSteer && !this.isCompacting ? html`<button ?disabled=${this.disabled} title="Steer the current response before the next model call" @click=${() => { this.send("steer"); }}>Steer</button>` : null}
           <button ?disabled=${this.disabled || !this.canStop} title=${this.canStop ? "Stop current work and clear queued messages" : "Nothing running"} @click=${() => this.onStop?.()}>Stop</button>
@@ -120,18 +128,19 @@ export class PromptEditor extends LitElement {
     const model = status.model?.id ?? "no model";
     const provider = status.model?.provider !== undefined && status.model.provider !== "" ? `${status.model.provider}/` : "";
     return html`
-      <div class="compact-status" aria-label="Session status">
+      <div class="compact-status status-primary" aria-label="Session mode and model">
+        <select class="select-mode" title="Select mode" .value=${this.footerControls?.mode ?? "default"} ?disabled=${this.disabled || this.cwd === undefined || this.cwd === ""} @change=${(event: Event) => { this.setFooterModeFromEvent(event); }}>
+          <option value="default">mode: default</option>
+          <option value="build">mode: build</option>
+          <option value="plan">mode: plan</option>
+        </select>
         <button class="select-model" title="Select model" @click=${() => this.onSelectModel?.()}>${provider}${model}</button>
+      </div>
+      <div class="compact-status status-secondary" aria-label="Session thinking and fast mode">
         <button class="select-thinking" title="Select thinking level" @click=${() => this.onSelectThinking?.()}>think ${status.thinkingLevel ?? "off"}</button>
-        ${this.renderExtensionStatus("ivyhouse-fast")}
+        <button class=${`fast-toggle ${this.footerControls?.fastEnabled === true ? "fast-on" : ""}`} title="Toggle Fast mode" aria-pressed=${String(this.footerControls?.fastEnabled === true)} ?disabled=${this.disabled || this.cwd === undefined || this.cwd === ""} @click=${() => { void this.toggleFast(); }}>fast</button>
       </div>
     `;
-  }
-
-  private renderExtensionStatus(key: string) {
-    const item = this.status?.extensionStatuses?.find((status) => status.key === key);
-    if (item === undefined || item.label.trim().length === 0) return null;
-    return html`<span class="status-pill" title=${item.label}>${item.label}</span>`;
   }
 
   private createEditor() {
@@ -147,6 +156,7 @@ export class PromptEditor extends LitElement {
           indentUnit.of("  "),
           syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
           EditorView.lineWrapping,
+          EditorView.domEventHandlers({ paste: (event) => this.handlePaste(event) }),
           EditorView.contentAttributes.of((view) => inputAssistanceContentAttributes(view.state.sliceDoc(0, view.state.selection.main.head))),
           placeholder("Message pi... Use / for commands, @ for tracked files, @ space for all files"),
           this.editableCompartment.of(EditorView.editable.of(!this.disabled)),
@@ -306,55 +316,117 @@ export class PromptEditor extends LitElement {
     this.isDraggingFile = false;
   }
 
+  private async refreshFooterControls(): Promise<void> {
+    if (this.cwd === undefined || this.cwd === "") {
+      this.footerControls = undefined;
+      return;
+    }
+    this.footerControls = await api.footerControls(this.cwd).catch(() => this.footerControls);
+  }
+
+  private setFooterModeFromEvent(event: Event): void {
+    const target = event.currentTarget;
+    if (!(target instanceof HTMLSelectElement)) return;
+    void this.setFooterMode(target.value);
+  }
+
+  private async setFooterMode(value: string): Promise<void> {
+    if (this.cwd === undefined || this.cwd === "") return;
+    const mode = footerModeFromString(value);
+    if (mode === undefined) return;
+    this.footerControls = await api.setFooterMode(this.cwd, mode).catch(() => this.footerControls);
+  }
+
+  private async toggleFast(): Promise<void> {
+    if (this.cwd === undefined || this.cwd === "") return;
+    this.footerControls = await api.toggleFast(this.cwd).catch(() => this.footerControls);
+  }
+
+  private openFilePicker(): void {
+    if (this.disabled) return;
+    this.fileInput?.click();
+  }
+
+  private async handleFileInputChange(event: Event): Promise<void> {
+    const input = event.currentTarget instanceof HTMLInputElement ? event.currentTarget : this.fileInput;
+    const files = Array.from(input?.files ?? []);
+    if (input !== undefined) input.value = "";
+    await this.addFilesAsAttachments(files, "picker");
+  }
+
   private async handleDrop(event: DragEvent): Promise<void> {
     if (this.disabled || !hasFiles(event)) return;
     event.preventDefault();
     event.stopPropagation();
     this.isDraggingFile = false;
-    const files = Array.from(event.dataTransfer?.files ?? []);
-    if (files.length === 0) return;
+    await this.addFilesAsAttachments(Array.from(event.dataTransfer?.files ?? []), "drop");
+  }
+
+  private handlePaste(event: ClipboardEvent): boolean {
+    if (this.disabled) return false;
+    const clipboard = event.clipboardData;
+    if (clipboard === null) return false;
+    const files = clipboardFiles(clipboard);
+    if (files.length === 0) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    const text = clipboard.getData("text/plain");
+    if (text !== "") this.insertTextAtSelection(text);
+    void this.addFilesAsAttachments(files, "paste");
+    return true;
+  }
+
+  private insertTextAtSelection(text: string): void {
+    const editor = this.editor;
+    if (!editor) return;
+    const selection = editor.state.selection.main;
+    editor.dispatch({ changes: { from: selection.from, to: selection.to, insert: text }, selection: EditorSelection.cursor(selection.from + text.length), scrollIntoView: true });
+  }
+
+  private async addFilesAsAttachments(files: File[], source: PromptAttachmentSource): Promise<void> {
+    if (this.disabled || files.length === 0) return;
     const remaining = Math.max(0, MAX_ATTACHMENT_COUNT - this.attachments.length);
     const acceptedFiles = files.slice(0, remaining);
-    const attachments = await Promise.all(acceptedFiles.map((file) => this.createAttachment(file)));
+    const attachments = await Promise.all(acceptedFiles.map((file) => this.createAttachment(file, source)));
     const skipped = files.length - acceptedFiles.length;
-    const skippedAttachment = skipped > 0 ? [this.unsupportedAttachment(`skipped-${String(Date.now())}`, `${String(skipped)} skipped files`, "", 0, `Only ${String(MAX_ATTACHMENT_COUNT)} attachments are allowed.`)] : [];
+    const skippedAttachment = skipped > 0 ? [this.unsupportedAttachment(`skipped-${String(Date.now())}`, `${String(skipped)} skipped files`, "", 0, `Only ${String(MAX_ATTACHMENT_COUNT)} attachments are allowed.`, source)] : [];
     this.attachments = [...this.attachments, ...attachments, ...skippedAttachment];
     this.editor?.focus();
   }
 
-  private async createAttachment(file: File): Promise<PromptAttachmentPayload> {
+  private async createAttachment(file: File, source: PromptAttachmentSource): Promise<PromptAttachmentPayload> {
     const extension = extensionFromFilename(file.name);
     const warnings = isRiskyAttachmentFilename(file.name) ? ["Sensitive filename: content will not be attached."] : [];
-    if (!isSupportedAttachmentExtension(extension)) return this.unsupportedAttachment(`att-${crypto.randomUUID()}`, file.name, file.type, file.size, "Unsupported file type.");
-    if (warnings.length > 0) return this.metadataOnlyAttachment(file, extension, warnings);
+    if (!isSupportedAttachmentExtension(extension)) return this.unsupportedAttachment(`att-${crypto.randomUUID()}`, file.name, file.type, file.size, "Unsupported file type.", source);
+    if (warnings.length > 0) return this.metadataOnlyAttachment(file, extension, warnings, source);
 
     if (isTextAttachmentExtension(extension)) {
-      if (file.size > MAX_TEXT_ATTACHMENT_BYTES) return this.metadataOnlyAttachment(file, extension, [`Text file is larger than ${formatBytes(MAX_TEXT_ATTACHMENT_BYTES)}; content not attached.`]);
-      return { id: `att-${crypto.randomUUID()}`, kind: "text", filename: file.name, extension, mime: file.type || mimeForExtension(extension), size: file.size, source: "drop", warnings, text: await file.text(), extractionStatus: "ready" };
+      if (file.size > MAX_TEXT_ATTACHMENT_BYTES) return this.metadataOnlyAttachment(file, extension, [`Text file is larger than ${formatBytes(MAX_TEXT_ATTACHMENT_BYTES)}; content not attached.`], source);
+      return { id: `att-${crypto.randomUUID()}`, kind: "text", filename: file.name, extension, mime: file.type || mimeForExtension(extension), size: file.size, source, warnings, text: await file.text(), extractionStatus: "ready" };
     }
 
     if (isDocumentAttachmentExtension(extension)) {
-      if (file.size > MAX_DOCUMENT_ATTACHMENT_BYTES) return this.metadataOnlyAttachment(file, extension, [`Document is larger than ${formatBytes(MAX_DOCUMENT_ATTACHMENT_BYTES)}; content not attached.`]);
-      return { id: `att-${crypto.randomUUID()}`, kind: "document", filename: file.name, extension, mime: file.type || mimeForExtension(extension), size: file.size, source: "drop", warnings, dataBase64: await fileToBase64(file), extractionStatus: "ready" };
+      if (file.size > MAX_DOCUMENT_ATTACHMENT_BYTES) return this.metadataOnlyAttachment(file, extension, [`Document is larger than ${formatBytes(MAX_DOCUMENT_ATTACHMENT_BYTES)}; content not attached.`], source);
+      return { id: `att-${crypto.randomUUID()}`, kind: "document", filename: file.name, extension, mime: file.type || mimeForExtension(extension), size: file.size, source, warnings, dataBase64: await fileToBase64(file), extractionStatus: "ready" };
     }
 
     if (isImageAttachmentExtension(extension)) {
-      if (file.size > MAX_IMAGE_ATTACHMENT_BYTES) return this.metadataOnlyAttachment(file, extension, [`Image is larger than ${formatBytes(MAX_IMAGE_ATTACHMENT_BYTES)}; content not attached.`]);
+      if (file.size > MAX_IMAGE_ATTACHMENT_BYTES) return this.metadataOnlyAttachment(file, extension, [`Image is larger than ${formatBytes(MAX_IMAGE_ATTACHMENT_BYTES)}; content not attached.`], source);
       const dataBase64 = await fileToBase64(file);
       const mime = file.type || mimeForExtension(extension);
-      return { id: `att-${crypto.randomUUID()}`, kind: "image", filename: file.name, extension, mime, size: file.size, source: "drop", warnings, dataBase64, dataUrl: `data:${mime};base64,${dataBase64}`, extractionStatus: "ready" };
+      return { id: `att-${crypto.randomUUID()}`, kind: "image", filename: file.name, extension, mime, size: file.size, source, warnings, dataBase64, dataUrl: `data:${mime};base64,${dataBase64}`, extractionStatus: "ready" };
     }
 
-    return this.unsupportedAttachment(`att-${crypto.randomUUID()}`, file.name, file.type, file.size, "Unsupported file type.");
+    return this.unsupportedAttachment(`att-${crypto.randomUUID()}`, file.name, file.type, file.size, "Unsupported file type.", source);
   }
 
-  private metadataOnlyAttachment(file: File, extension: string, warnings: string[]): PromptAttachmentPayload {
+  private metadataOnlyAttachment(file: File, extension: string, warnings: string[], source: PromptAttachmentSource): PromptAttachmentPayload {
     const kind = isImageAttachmentExtension(extension) ? "image" : isDocumentAttachmentExtension(extension) ? "document" : isTextAttachmentExtension(extension) ? "text" : "unsupported";
-    return { id: `att-${crypto.randomUUID()}`, kind, filename: file.name, extension, mime: file.type || mimeForExtension(extension), size: file.size, source: "drop", warnings, extractionStatus: "metadata-only", reason: warnings[0] ?? "Metadata only." };
+    return { id: `att-${crypto.randomUUID()}`, kind, filename: file.name, extension, mime: file.type || mimeForExtension(extension), size: file.size, source, warnings, extractionStatus: "metadata-only", reason: warnings[0] ?? "Metadata only." };
   }
 
-  private unsupportedAttachment(id: string, filename: string, mime: string, size: number, reason: string): PromptAttachmentPayload {
-    return { id, kind: "unsupported", filename, extension: extensionFromFilename(filename), mime: mime || "application/octet-stream", size, source: "drop", warnings: [reason], extractionStatus: "metadata-only", reason };
+  private unsupportedAttachment(id: string, filename: string, mime: string, size: number, reason: string, source: PromptAttachmentSource): PromptAttachmentPayload {
+    return { id, kind: "unsupported", filename, extension: extensionFromFilename(filename), mime: mime || "application/octet-stream", size, source, warnings: [reason], extractionStatus: "metadata-only", reason };
   }
 
   private removeAttachment(id: string): void {
@@ -378,6 +450,23 @@ export class PromptEditor extends LitElement {
 
 function hasFiles(event: DragEvent): boolean {
   return Array.from(event.dataTransfer?.types ?? []).includes("Files");
+}
+
+function clipboardFiles(data: DataTransfer): File[] {
+  return Array.from(data.items)
+    .filter((item) => item.kind === "file")
+    .flatMap((item, index) => {
+      const file = item.getAsFile();
+      return file === null ? [] : [normalizeClipboardFile(file, index)];
+    });
+}
+
+function normalizeClipboardFile(file: File, index: number): File {
+  if (extensionFromFilename(file.name) !== "") return file;
+  const extension = extensionForMime(file.type);
+  if (extension === "") return file;
+  const prefix = isImageAttachmentExtension(extension) ? "pasted-image" : "pasted-file";
+  return new File([file], `${prefix}-${String(Date.now())}-${String(index + 1)}${extension}`, { type: file.type || mimeForExtension(extension), lastModified: file.lastModified });
 }
 
 async function fileToBase64(file: File): Promise<string> {
@@ -411,10 +500,34 @@ function mimeForExtension(extension: string): string {
   }
 }
 
+function extensionForMime(mime: string): string {
+  switch (mime.toLowerCase()) {
+    case "text/plain": return ".txt";
+    case "text/markdown": return ".md";
+    case "text/html": return ".html";
+    case "text/csv": return ".csv";
+    case "application/pdf": return ".pdf";
+    case "application/msword": return ".doc";
+    case "application/vnd.openxmlformats-officedocument.wordprocessingml.document": return ".docx";
+    case "application/vnd.ms-excel": return ".xls";
+    case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": return ".xlsx";
+    case "image/png": return ".png";
+    case "image/jpeg": return ".jpg";
+    case "image/webp": return ".webp";
+    case "image/gif": return ".gif";
+    default: return "";
+  }
+}
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${String(bytes)} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function footerModeFromString(value: string): IvyhouseFooterMode | undefined {
+  if (value === "default" || value === "build" || value === "plan") return value;
+  return undefined;
 }
 
 function draftStorageKey(machineId: unknown, sessionId: unknown): string | undefined {

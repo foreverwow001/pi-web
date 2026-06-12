@@ -1,4 +1,4 @@
-import type { ArchiveSessionsResponse, AuthProviderOption, AuthProviderStatus, AuthProvidersResponse, AuthStatusSource, AuthType, CommandOption, CommandResult, FileContentResponse, FileSuggestion, FileTreeEntry, FileTreeResponse, GitDiffResponse, GitFileState, GitStatusFile, GitStatusResponse, Machine, MachineHealth, MachineKind, MachineRuntime, MachineStatus, MessagePage, ModelSelectionResponse, OAuthFlowState, PiWebCapability, PiWebComponentStatus, PiWebConfigEnvOverrides, PiWebConfigResponse, PiWebConfigValues, PiWebInstallationInfo, PiWebPluginConfigMap, PiWebPluginInfo, PiWebPluginsResponse, PiWebPluginScope, PiWebReleaseStatus, PiWebRuntimeComponent, PiWebRuntimeResponse, PiWebServiceComponent, PiWebShortcutConfig, PiWebStatusMessage, PiWebStatusResponse, PiWebStatusSeverity, Project, QueuedSessionMessage, SessionExtensionStatus, SessionInfo, SessionModel, SessionStatus, SlashCommand, TerminalCommandRun, TerminalCommandRunStatus, TerminalInfo, ThinkingLevel, ThinkingLevelsResponse, Workspace, WorkspaceActivity, WorkspaceActivityResponse } from "../../../shared/apiTypes";
+import type { ArchiveSessionsResponse, AuthProviderOption, AuthProviderStatus, AuthProvidersResponse, AuthStatusSource, AuthType, CommandOption, CommandResult, FileContentResponse, FileSuggestion, FileTreeEntry, FileTreeResponse, GitDiffResponse, GitFileState, GitStatusFile, GitStatusResponse, IvyhouseFooterControlsResponse, IvyhouseFastOverride, IvyhouseFooterMode, Machine, MachineHealth, MachineKind, MachineRuntime, MachineStatus, MessagePage, ModelSelectionResponse, OAuthFlowState, PiWebCapability, PiWebComponentStatus, PiWebConfigEnvOverrides, PiWebConfigResponse, PiWebConfigValues, PiWebInstallationInfo, PiWebPluginConfigMap, PiWebPluginInfo, PiWebPluginsResponse, PiWebPluginScope, PiWebReleaseStatus, PiWebRuntimeComponent, PiWebRuntimeResponse, PiWebServiceComponent, PiWebShortcutConfig, PiWebStatusMessage, PiWebStatusResponse, PiWebStatusSeverity, Project, QueuedSessionMessage, SessionExtensionStatus, SessionInfo, SessionModel, SessionStatus, SlashCommand, TerminalCommandRun, TerminalCommandRunStatus, TerminalInfo, ThinkingLevel, ThinkingLevelsResponse, Workspace, WorkspaceActivity, WorkspaceActivityResponse } from "../../../shared/apiTypes";
 import { isPiWebCapability } from "../../../shared/capabilities";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -56,6 +56,29 @@ export function parseMessagePage(value: unknown): MessagePage {
   if (Array.isArray(value)) return { messages: value, start: 0, total: value.length };
   const record = requireRecord(value);
   return { messages: parseUnknownArray(record["messages"]), start: requireNumber(record, "start"), total: requireNumber(record, "total") };
+}
+
+export function parseIvyhouseFooterControlsResponse(value: unknown): IvyhouseFooterControlsResponse {
+  const record = requireRecord(value);
+  return {
+    cwd: requireString(record, "cwd"),
+    mode: requireFooterMode(record, "mode"),
+    fastOverride: requireFastOverride(record, "fastOverride"),
+    fastEnabled: requireBoolean(record, "fastEnabled"),
+    stateFile: requireString(record, "stateFile"),
+  };
+}
+
+function requireFooterMode(record: Record<string, unknown>, key: string): IvyhouseFooterMode {
+  const value = requireString(record, key);
+  if (value !== "default" && value !== "build" && value !== "plan") throw new Error(`Expected footer mode field: ${key}`);
+  return value;
+}
+
+function requireFastOverride(record: Record<string, unknown>, key: string): IvyhouseFastOverride {
+  const value = requireString(record, key);
+  if (value !== "auto" && value !== "on" && value !== "off") throw new Error(`Expected fast override field: ${key}`);
+  return value;
 }
 
 export function parseMachinesResponse(value: unknown): Machine[] {

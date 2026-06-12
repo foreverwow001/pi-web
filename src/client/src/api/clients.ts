@@ -1,4 +1,4 @@
-import type { FileSuggestion, PiWebConfigValues, RunTerminalCommandInput, SessionRef, TerminalCommandRun, TerminalCommandRunFilter } from "../../../shared/apiTypes";
+import type { FileSuggestion, IvyhouseFooterMode, PiWebConfigValues, RunTerminalCommandInput, SessionRef, TerminalCommandRun, TerminalCommandRunFilter } from "../../../shared/apiTypes";
 import { request } from "./http";
 import {
   arrayOf,
@@ -15,6 +15,7 @@ import {
   parseFileTreeResponse,
   parseGitDiffResponse,
   parseGitStatusResponse,
+  parseIvyhouseFooterControlsResponse,
   parseMachine,
   parseMachineHealth,
   parseMachineRuntime,
@@ -102,6 +103,17 @@ export const pluginsApi = {
 
 export const activityApi = {
   workspaceActivity: (machineId = "local") => request(`${machinePrefix(machineId)}/activity`, parseWorkspaceActivityResponse),
+};
+
+function cwdQuery(cwd: string | undefined): string {
+  if (cwd === undefined || cwd === "") return "";
+  return `?${new URLSearchParams({ cwd }).toString()}`;
+}
+
+export const ivyhouseApi = {
+  footerControls: (cwd?: string) => request(`/api/ivyhouse/footer-controls${cwdQuery(cwd)}`, parseIvyhouseFooterControlsResponse),
+  setFooterMode: (cwd: string, mode: IvyhouseFooterMode) => request("/api/ivyhouse/footer-controls/mode", parseIvyhouseFooterControlsResponse, { method: "POST", body: JSON.stringify({ cwd, mode }) }),
+  toggleFast: (cwd: string) => request("/api/ivyhouse/footer-controls/fast/toggle", parseIvyhouseFooterControlsResponse, { method: "POST", body: JSON.stringify({ cwd }) }),
 };
 
 export const projectsApi = {
@@ -246,6 +258,7 @@ export const api = {
   ...configApi,
   ...pluginsApi,
   ...activityApi,
+  ...ivyhouseApi,
   ...projectsApi,
   ...workspacesApi,
   ...sessionsApi,

@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -9,8 +9,18 @@ import { SessionDaemonClient } from "../sessiond/sessionDaemonClient.js";
 import type { SessionProxyDaemon } from "./sessiond/sessionProxyRoutes.js";
 
 export type GateAutoAnswerMode = "manual" | "semi-auto" | "autopilot";
+export type IvyhouseFooterMode = "default" | "build" | "plan";
+export type IvyhouseFastOverride = "auto" | "on" | "off";
 
 type StatusKind = "ready" | "configured" | "failed" | "gated" | "disabled";
+
+interface IvyhouseFooterControlsResponse {
+  cwd: string;
+  mode: IvyhouseFooterMode;
+  fastOverride: IvyhouseFastOverride;
+  fastEnabled: boolean;
+  stateFile: string;
+}
 
 interface IvyhouseStatusPanelResponse {
   generatedAt: string;
@@ -39,7 +49,9 @@ interface IvyhouseStatusPanelResponse {
 }
 
 const STATE_DIR = join(homedir(), ".local", "share", "ivyhouse", "pi-sidebar");
+const FOOTER_CONTROLS_STATE_DIR = join(homedir(), ".local", "share", "ivyhouse", "pi-footer-controls");
 const GATE_MODE_PATH = ".workflow-core/state/gate-autoanswer/mode-state.json";
+const OPENAI_FAST_CONFIG_PATH = ".pi/openai-fast.json";
 const READINESS_TTL_MS = 30_000;
 const READINESS_TIMEOUT_MS = 8_000;
 
@@ -75,6 +87,37 @@ export function registerIvyhouseStatusPanelRoutes(app: FastifyInstance, daemon: 
       };
       await writeJson(join(cwd, GATE_MODE_PATH), next);
       return { gateAutoAnswer: normalizeGateMode(next), stateFile: join(cwd, GATE_MODE_PATH) };
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.get<{ Querystring: { cwd?: string } }>("/api/ivyhouse/footer-controls", async (request, reply) => {
+    try {
+      return await readFooterControls(resolveCwd(request.query.cwd));
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post<{ Body: { cwd?: string; mode?: unknown } }>("/api/ivyhouse/footer-controls/mode", async (request, reply) => {
+    try {
+      const cwd = resolveCwd(request.body.cwd);
+      const mode = normalizeFooterMode(request.body.mode);
+      await writeFooterControls(cwd, { agent: mode });
+      return await readFooterControls(cwd);
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post<{ Body: { cwd?: string } }>("/api/ivyhouse/footer-controls/fast/toggle", async (request, reply) => {
+    try {
+      const cwd = resolveCwd(request.body.cwd);
+      const current = await readFooterControlsState(cwd);
+      const enabled = footerFastEnabled(cwd, normalizeFastOverride(current["fastOverride"]));
+      await writeFooterControls(cwd, { fastOverride: enabled ? "off" : "on" });
+      return await readFooterControls(cwd);
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -126,6 +169,58 @@ function resolveCwd(cwd: string | undefined): string {
 
 function cwdHash(cwd: string): string {
   return createHash("sha256").update(resolve(cwd)).digest("hex").slice(0, 16);
+}
+
+function footerControlsStatePath(cwd: string): string {
+  return join(FOOTER_CONTROLS_STATE_DIR, `state-${cwdHash(cwd)}.json`);
+}
+
+async function readFooterControls(cwd: string): Promise<IvyhouseFooterControlsResponse> {
+  const state = await readFooterControlsState(cwd);
+  const mode = normalizeFooterMode(state["agent"]);
+  const fastOverride = normalizeFastOverride(state["fastOverride"]);
+  return {
+    cwd,
+    mode,
+    fastOverride,
+    fastEnabled: footerFastEnabled(cwd, fastOverride),
+    stateFile: footerControlsStatePath(cwd),
+  };
+}
+
+async function readFooterControlsState(cwd: string): Promise<RecordValue> {
+  const parsed = await readJson(footerControlsStatePath(cwd));
+  return isRecord(parsed) ? parsed : { agent: "default", fastOverride: "auto" };
+}
+
+async function writeFooterControls(cwd: string, patch: RecordValue): Promise<void> {
+  const next = { ...await readFooterControlsState(cwd), ...patch };
+  await writeJson(footerControlsStatePath(cwd), next);
+}
+
+function normalizeFooterMode(value: unknown): IvyhouseFooterMode {
+  if (value === "build" || value === "plan") return value;
+  if (value === "default" || value === undefined || value === null) return "default";
+  throw new Error("mode must be default, build, or plan");
+}
+
+function normalizeFastOverride(value: unknown): IvyhouseFastOverride {
+  return value === "on" || value === "off" || value === "auto" ? value : "auto";
+}
+
+function footerFastEnabled(cwd: string, override: IvyhouseFastOverride): boolean {
+  if (override === "on") return true;
+  if (override === "off") return false;
+  const config = readJsonSync(join(cwd, OPENAI_FAST_CONFIG_PATH));
+  return isRecord(config) && config["enabled"] === true;
+}
+
+function readJsonSync(path: string): unknown {
+  try {
+    return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function readJson(path: string): Promise<unknown> {

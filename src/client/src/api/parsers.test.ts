@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { PI_WEB_CAPABILITIES } from "../../../shared/capabilities";
-import { parseCommandResult, parseFileContentResponse, parseFileSuggestion, parseGitStatusResponse, parseMessagePage, parsePiWebConfigResponse, parsePiWebPluginsResponse, parsePiWebRuntimeResponse, parseSessionStatus, parseSlashCommand, parseTerminalCommandRun, parseTerminalInfo, parseWorkspaceActivityResponse } from "./parsers";
+import { parseCommandResult, parseFileContentResponse, parseFileSuggestion, parseGitStatusResponse, parseIvyhouseFooterControlsResponse, parseMessagePage, parsePiWebConfigResponse, parsePiWebPluginsResponse, parsePiWebRuntimeResponse, parseSessionStatus, parseSlashCommand, parseTerminalCommandRun, parseTerminalInfo, parseWorkspaceActivityResponse } from "./parsers";
 
 describe("API parsers", () => {
+  it("parses Ivyhouse footer controls responses", () => {
+    expect(parseIvyhouseFooterControlsResponse({ cwd: "/repo", mode: "build", fastOverride: "on", fastEnabled: true, stateFile: "/state.json" })).toEqual({ cwd: "/repo", mode: "build", fastOverride: "on", fastEnabled: true, stateFile: "/state.json" });
+    expect(() => parseIvyhouseFooterControlsResponse({ cwd: "/repo", mode: "bad", fastOverride: "on", fastEnabled: true, stateFile: "/state.json" })).toThrow("Expected footer mode");
+    expect(() => parseIvyhouseFooterControlsResponse({ cwd: "/repo", mode: "build", fastOverride: "bad", fastEnabled: true, stateFile: "/state.json" })).toThrow("Expected fast override");
+  });
+
   it("parses PI WEB config responses", () => {
     expect(parsePiWebConfigResponse({
       path: "/tmp/config.json",

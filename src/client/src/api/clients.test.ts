@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PI_WEB_CAPABILITIES } from "../../../shared/capabilities";
 import type { TerminalCommandRun, Workspace } from "../../../shared/apiTypes";
-import { machinesApi, piWebApi, sessionsApi, terminalsApi, workspacesApi } from "./clients";
+import { ivyhouseApi, machinesApi, piWebApi, sessionsApi, terminalsApi, workspacesApi } from "./clients";
 
 const workspace: Workspace = {
   id: "w/1",
@@ -57,6 +57,35 @@ describe("machine-scoped runtime API", () => {
 
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(fetchCall(fetchMock, 0)[0]).toBe("/api/machines/remote%20a/runtime");
+  });
+});
+
+describe("Ivyhouse footer controls API", () => {
+  it("reads footer controls with cwd context", async () => {
+    const fetchMock = stubJsonFetch({ cwd: "/repo", mode: "default", fastOverride: "auto", fastEnabled: false, stateFile: "/state.json" });
+
+    await ivyhouseApi.footerControls("/repo");
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchCall(fetchMock, 0)[0]).toBe("/api/ivyhouse/footer-controls?cwd=%2Frepo");
+  });
+
+  it("updates mode and toggles fast through the Ivyhouse bridge", async () => {
+    const response = { cwd: "/repo", mode: "plan", fastOverride: "on", fastEnabled: true, stateFile: "/state.json" };
+    const fetchMock = stubSequenceFetch([jsonResponse(response), jsonResponse(response)]);
+
+    await ivyhouseApi.setFooterMode("/repo", "plan");
+    await ivyhouseApi.toggleFast("/repo");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [modeUrl, modeInit] = fetchCall(fetchMock, 0);
+    expect(modeUrl).toBe("/api/ivyhouse/footer-controls/mode");
+    expect(modeInit?.method).toBe("POST");
+    expect(JSON.parse(requestBody(modeInit))).toEqual({ cwd: "/repo", mode: "plan" });
+    const [fastUrl, fastInit] = fetchCall(fetchMock, 1);
+    expect(fastUrl).toBe("/api/ivyhouse/footer-controls/fast/toggle");
+    expect(fastInit?.method).toBe("POST");
+    expect(JSON.parse(requestBody(fastInit))).toEqual({ cwd: "/repo" });
   });
 });
 

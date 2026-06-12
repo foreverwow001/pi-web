@@ -25,6 +25,8 @@ import { registerMachineProxyRoutes } from "./machines/machineProxyRoutes.js";
 import { proxyMachinePluginAsset, registerMachinePluginProxyRoutes } from "./machines/machinePluginProxyRoutes.js";
 import { registerIvyhouseStatusPanelRoutes } from "./ivyhouseStatusPanel.js";
 
+export const PI_WEB_REQUEST_BODY_LIMIT_BYTES = 20 * 1024 * 1024;
+
 export interface AppDependencies {
   projects?: ProjectService;
   workspaces?: WorkspaceService;
@@ -87,7 +89,7 @@ function registerLocalFileSuggestionRoutes(app: FastifyInstance, prefix: string)
 }
 
 export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInstance> {
-  const app = Fastify({ logger: deps.logger ?? true });
+  const app = Fastify({ logger: deps.logger ?? true, bodyLimit: PI_WEB_REQUEST_BODY_LIMIT_BYTES });
   await app.register(fastifyWebsocket);
 
   const projects = deps.projects ?? new ProjectService(new ProjectStore());
