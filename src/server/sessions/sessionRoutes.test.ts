@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -60,12 +61,15 @@ describe("session routes", () => {
     registerSessionRoutes(routeApp, routeService, eventHub);
 
     try {
-      const statusResponse = await routeApp.inject({ method: "GET", url: `/sessions/session-1/status?cwd=${encodeURIComponent("/repo")}` });
-      const promptResponse = await routeApp.inject({ method: "POST", url: "/sessions/session-1/prompt", payload: { cwd: "/repo", text: "hello" } });
+      // The route normalizes the request cwd, so the service sees the resolved
+      // absolute path (drive-qualified on Windows).
+      const requestCwd = resolve("/repo");
+      const statusResponse = await routeApp.inject({ method: "GET", url: `/sessions/session-1/status?cwd=${encodeURIComponent(requestCwd)}` });
+      const promptResponse = await routeApp.inject({ method: "POST", url: "/sessions/session-1/prompt", payload: { cwd: requestCwd, text: "hello" } });
 
       expect(statusResponse.statusCode).toBe(200);
       expect(promptResponse.statusCode).toBe(200);
-      expect(routeService.calls).toEqual([{ id: "session-1", cwd: "/repo" }, { lookup: { id: "session-1", cwd: "/repo" }, text: "hello" }]);
+      expect(routeService.calls).toEqual([{ id: "session-1", cwd: requestCwd }, { lookup: { id: "session-1", cwd: requestCwd }, text: "hello" }]);
     } finally {
       await routeService.dispose();
       await routeApp.close();

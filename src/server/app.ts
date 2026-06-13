@@ -8,6 +8,7 @@ import { ProjectStore } from "./storage/projectStore.js";
 import { ProjectService } from "./projects/projectService.js";
 import { WorkspaceService } from "./workspaces/workspaceService.js";
 import { listFileSuggestions, listPathSuggestions } from "./workspaces/fileSuggestions.js";
+import { normalizeRequestCwd } from "./workingDirectory.js";
 import { listDirectorySuggestions } from "./projects/directorySuggestions.js";
 import { SessionDaemonClient } from "../sessiond/sessionDaemonClient.js";
 import { registerSessionProxyRoutes, type SessionProxyDaemon } from "./sessiond/sessionProxyRoutes.js";
@@ -80,8 +81,9 @@ function registerLocalFileSuggestionRoutes(app: FastifyInstance, prefix: string)
   app.get<{ Querystring: { cwd?: string; q?: string; kind?: "tracked" | "untracked" | "other"; mode?: "file" | "path"; scope?: "tracked" | "all" } }>(`${prefix}/files`, async (request, reply) => {
     if (request.query.cwd === undefined || request.query.cwd === "") return reply.code(400).send({ error: "cwd query parameter is required" });
     try {
-      if (request.query.mode === "path") return await listPathSuggestions(request.query.cwd, request.query.q ?? "");
-      return await listFileSuggestions(request.query.cwd, request.query.q ?? "", { kind: request.query.kind, scope: request.query.scope });
+      const cwd = normalizeRequestCwd(request.query.cwd);
+      if (request.query.mode === "path") return await listPathSuggestions(cwd, request.query.q ?? "");
+      return await listFileSuggestions(cwd, request.query.q ?? "", { kind: request.query.kind, scope: request.query.scope });
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
     }

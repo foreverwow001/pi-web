@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { normalizeRequestCwd } from "../workingDirectory.js";
 import type { SessionEventHub } from "../realtime/sessionEventHub.js";
 import type { PiSessionRef, PiSessionService } from "./piSessionService.js";
 
@@ -23,13 +24,17 @@ interface PromptRequestBody {
 export function registerSessionRoutes(app: FastifyInstance, sessions: PiSessionService, eventHub: SessionEventHub, prefix = ""): void {
   app.get<{ Querystring: SessionQuery }>(`${prefix}/sessions`, async (request, reply) => {
     if (request.query.cwd === undefined || request.query.cwd === "") return reply.code(400).send({ error: "cwd query parameter is required" });
-    return sessions.list(request.query.cwd);
+    try {
+      return await sessions.list(normalizeRequestCwd(request.query.cwd));
+    } catch (error) {
+      return reply.code(400).send({ error: errorMessage(error) });
+    }
   });
 
   app.post<{ Body: { cwd?: unknown } | undefined }>(`${prefix}/sessions`, async (request, reply) => {
     try {
       const body = requireRecord(request.body);
-      return await sessions.start(requireString(body, "cwd"));
+      return await sessions.start(normalizeRequestCwd(requireString(body, "cwd")));
     } catch (error) {
       return reply.code(400).send({ error: errorMessage(error) });
     }
@@ -232,8 +237,9 @@ export function registerSessionRoutes(app: FastifyInstance, sessions: PiSessionS
   });
 
   app.get<{ Params: { sessionId: string }; Querystring: SessionQuery }>(`${prefix}/sessions/:sessionId/events`, { websocket: true }, (socket, request) => {
-    const lookup = sessionLookupFromQuery(request.params.sessionId, request.query);
-    eventHub.add(sessionIdFromLookup(lookup), socket);
+    // Only the id matters for event subscription; cwd is intentionally ignored
+    // so a malformed value cannot throw inside the websocket handler.
+    eventHub.add(request.params.sessionId, socket);
   });
 
   app.get(`${prefix}/sessions/events`, { websocket: true }, (socket) => {
@@ -253,15 +259,13 @@ function sessionLookupFromBody(id: string, body: Record<string, unknown>): Sessi
   const cwd = body["cwd"];
   if (cwd === undefined || cwd === "") return id;
   if (typeof cwd !== "string") throw new Error("cwd field must be a string");
-  return { id, cwd };
+  return { id, cwd: normalizeRequestCwd(cwd) };
 }
 
 function sessionLookupFromCwd(id: string, cwd: string | undefined): SessionLookup {
-  return cwd === undefined || cwd === "" ? id : { id, cwd };
-}
-
-function sessionIdFromLookup(lookup: SessionLookup): string {
-  return typeof lookup === "string" ? lookup : lookup.id;
+  // Legacy id-only lookups (no cwd) remain supported; a supplied cwd is
+  // normalized here so everything past the route layer sees canonical paths.
+  return cwd === undefined || cwd === "" ? id : { id, cwd: normalizeRequestCwd(cwd) };
 }
 
 function optionalRecord(value: unknown): Record<string, unknown> {

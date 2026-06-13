@@ -58,6 +58,10 @@ const serviceRefs: Record<ServiceId, NativeServiceRef> = {
 };
 
 const startServiceOrder: ServiceId[] = ["sessiond", "web", "uiDev"];
+// Restart web/UI before sessiond: when the restart command runs in a pi-web
+// terminal (owned by sessiond), restarting sessiond kills the command, so any
+// services listed after it would never be restarted.
+const restartServiceOrder: ServiceId[] = ["web", "uiDev", "sessiond"];
 
 interface PackageInfo {
   name: string;
@@ -430,7 +434,7 @@ async function nativeServiceCommands(): Promise<NativeServiceCommands> {
   if (installed.size === 0) return {};
   const web = installedServiceRefs(installed, ["web", "uiDev"]);
   const sessiond = installedServiceRefs(installed, ["sessiond"]);
-  const restartable = web.length === 0 ? [] : installedServiceRefs(installed);
+  const restartable = web.length === 0 ? [] : installedServiceRefs(installed, restartServiceOrder, restartServiceOrder);
   const status = installedServiceRefs(installed);
   return {
     ...(restartable.length === 0 ? {} : { restart: restartNativeServicesCommand(backend, restartable) }),
@@ -450,8 +454,8 @@ function installedServiceIds(backend: NativeServiceBackendKind): Set<ServiceId> 
   return new Set(startServiceOrder.filter((id) => existsSync(serviceFilePath(backend, serviceRefs[id]))));
 }
 
-function installedServiceRefs(installed: Set<ServiceId>, candidates: ServiceId[] = startServiceOrder): NativeServiceRef[] {
-  return startServiceOrder.filter((id) => candidates.includes(id) && installed.has(id)).map((id) => serviceRefs[id]);
+function installedServiceRefs(installed: Set<ServiceId>, candidates: ServiceId[] = startServiceOrder, order: ServiceId[] = startServiceOrder): NativeServiceRef[] {
+  return order.filter((id) => candidates.includes(id) && installed.has(id)).map((id) => serviceRefs[id]);
 }
 
 function serviceFilePath(backend: NativeServiceBackendKind, ref: NativeServiceRef): string {

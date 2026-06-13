@@ -2,8 +2,10 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createPiSessionManagerGateway, defaultPiSessionDir, defaultPiSessionsRoot, SessionDirResolver } from "./piSessionManagerGateway.js";
+import { createPiSessionManagerGateway, defaultPiSessionDir, defaultPiSessionsRoot, filterSessionsForCwd, SessionDirResolver } from "./piSessionManagerGateway.js";
+import type { PiSessionListEntry } from "./piSessionService.js";
 import type { PiSessionManager } from "./piSessionService.js";
+import { sep } from "node:path";
 
 let tempDir: string;
 let agentDir: string;
@@ -83,10 +85,52 @@ describe("Pi session manager gateway", () => {
     if (!hasSessionDir(created)) throw new Error("Expected SDK session manager");
     expect(created.getSessionDir()).toBe(sharedSessionDir);
   });
+
+  it("lists sessions for cwds that differ from the server process cwd", async () => {
+    // Regression: SessionManager.list("", dir) filtered against process.cwd(),
+    // hiding every session outside the daemon's own launch directory.
+    expect(cwd).not.toBe(process.cwd());
+    await writeSessionFile(defaultPiSessionDir(cwd, agentDir), "session-elsewhere", cwd);
+    const gateway = createPiSessionManagerGateway({ agentDir, env: {} });
+
+    await expect(gateway.list(cwd)).resolves.toMatchObject([{ id: "session-elsewhere", cwd }]);
+  });
+});
+
+describe("filterSessionsForCwd", () => {
+  it("matches cwds that differ only by trailing separator or redundant segments", () => {
+    const sessions = [sessionEntry("a", cwd)];
+
+    expect(filterSessionsForCwd(sessions, `${cwd}${sep}`)).toHaveLength(1);
+    expect(filterSessionsForCwd(sessions, join(cwd, "."))).toHaveLength(1);
+  });
+
+  it("excludes sessions with an empty cwd instead of matching the process cwd", () => {
+    expect(filterSessionsForCwd([sessionEntry("a", "")], process.cwd())).toHaveLength(0);
+  });
+
+  it("excludes sessions from other cwds", () => {
+    expect(filterSessionsForCwd([sessionEntry("a", join(tempDir, "other"))], cwd)).toHaveLength(0);
+  });
+});
+
+describe("session listing canonicalization", () => {
+  it("canonicalizes session header cwds written by external tools", async () => {
+    // Headers are written by the Pi CLI / SDK consumers and may contain
+    // unnormalized paths (trailing separators, redundant segments).
+    await writeSessionFile(defaultPiSessionDir(cwd, agentDir), "session-messy", `${cwd}${sep}.${sep}`);
+    const gateway = createPiSessionManagerGateway({ agentDir, env: {} });
+
+    await expect(gateway.list(cwd)).resolves.toMatchObject([{ id: "session-messy", cwd }]);
+  });
 });
 
 function hasSessionDir(manager: PiSessionManager): manager is PiSessionManager & { getSessionDir(): string } {
   return "getSessionDir" in manager && typeof manager.getSessionDir === "function";
+}
+
+function sessionEntry(id: string, sessionCwd: string): PiSessionListEntry {
+  return { path: join(tempDir, `${id}.jsonl`), id, cwd: sessionCwd, created: new Date(), modified: new Date(), messageCount: 0, firstMessage: "", allMessagesText: "" };
 }
 
 async function writeSessionFile(dir: string, id: string, sessionCwd: string): Promise<void> {

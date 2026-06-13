@@ -30,6 +30,7 @@ import type { AuthChange } from "./authService.js";
 import { fallbackSessionName, generateShortSessionName } from "./sessionNameGenerator.js";
 import { computeEditPreview, type EditPreviewResult } from "./editPreview.js";
 import { createPiSessionManagerGateway } from "./piSessionManagerGateway.js";
+import { cwdPathsEqual } from "../workingDirectory.js";
 import type { WorkspaceActivityService } from "../activity/workspaceActivityService.js";
 import { packagePromptWithAttachments, type AttachmentSummary } from "../attachments/attachmentProcessor.js";
 import { buildRoundUsageSnapshot, extractChildSummaryPathFromToolResult, extractChildUsageFromToolResult, usageBreakdownFromStats, type ActiveRoundUsage } from "./roundUsage.js";
@@ -74,7 +75,7 @@ function isPiSessionRef(ref: PiSessionLookup): ref is PiSessionRef {
 }
 
 function lookupMatchesActiveSession(ref: PiSessionLookup, active: ActiveSession<PiSessionRuntime>): boolean {
-  return !isPiSessionRef(ref) || active.runtime.cwd === ref.cwd;
+  return !isPiSessionRef(ref) || cwdPathsEqual(active.runtime.cwd, ref.cwd);
 }
 
 type QueuedPromptKind = "steer" | "followUp";

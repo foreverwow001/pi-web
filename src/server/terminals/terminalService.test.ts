@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { TerminalService } from "./terminalService";
 
-describe("TerminalService command runs", () => {
+// TerminalService spawns a POSIX shell (/bin/bash with -lc and commands like
+// printf/true/exit). The terminal feature is not supported on native Windows,
+// so these tests are skipped there rather than asserting Unix shell behavior.
+describe.skipIf(process.platform === "win32")("TerminalService command runs", () => {
   it("closes all terminal records for a cwd", () => {
     const service = new TerminalService();
     try {

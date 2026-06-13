@@ -3,6 +3,7 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { getAgentDir, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { canonicalizeStoredCwd, cwdPathsEqual } from "../workingDirectory.js";
 import type { PiSessionListEntry, PiSessionManager, PiSessionManagerGateway } from "./piSessionService.js";
 
 export const PI_SESSION_DIR_ENV = "PI_CODING_AGENT_SESSION_DIR";
@@ -77,8 +78,13 @@ class SettingsAwarePiSessionManagerGateway implements PiSessionManagerGateway {
 }
 
 export async function listSessionsInDir(sessionDir: string): Promise<PiSessionListEntry[]> {
-  const sdkSessions = await SessionManager.list("", sessionDir);
-  if (sdkSessions.length > 0) return sdkSessions;
+  // listAll(sessionDir) lists without the SDK's internal cwd filter, which would
+  // otherwise compare against this process's cwd and drop other projects' sessions.
+  // Cwd filtering is applied explicitly by filterSessionsForCwd where needed.
+  // Session file headers are written by external tools (Pi CLI, SDK consumers),
+  // so their cwd is canonicalized here before it enters pi-web.
+  const sdkSessions = await SessionManager.listAll(sessionDir);
+  if (sdkSessions.length > 0) return sdkSessions.map((session) => ({ ...session, cwd: canonicalizeStoredCwd(session.cwd) }));
   return listSessionsInDirFromJsonl(sessionDir);
 }
 
@@ -112,7 +118,7 @@ async function sessionEntryFromJsonl(path: string): Promise<PiSessionListEntry |
       const record = parsed;
       if (record["type"] === "session") {
         if (typeof record["id"] === "string" && record["id"] !== "") id = record["id"];
-        if (typeof record["cwd"] === "string" && record["cwd"] !== "") cwd = record["cwd"];
+        if (typeof record["cwd"] === "string" && record["cwd"] !== "") cwd = canonicalizeStoredCwd(record["cwd"]);
         if (typeof record["name"] === "string" && record["name"] !== "") name = record["name"];
       }
       const message = isRecord(record["message"]) ? record["message"] : undefined;
@@ -140,7 +146,9 @@ export async function listSessionsInDefaultPiStore(storeRoot = defaultPiSessions
 }
 
 export function filterSessionsForCwd(sessions: readonly PiSessionListEntry[], cwd: string): PiSessionListEntry[] {
-  return sessions.filter((session) => session.cwd === cwd);
+  // Sessions with an empty cwd (old session files) are excluded: resolve("") would
+  // resolve to this process's cwd and produce false matches.
+  return sessions.filter((session) => session.cwd !== "" && cwdPathsEqual(session.cwd, cwd));
 }
 
 export function defaultPiSessionsRoot(agentDir = getAgentDir()): string {
