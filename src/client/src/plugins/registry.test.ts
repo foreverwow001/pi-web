@@ -1,8 +1,9 @@
 import { html } from "lit";
 import { describe, expect, it, vi } from "vitest";
-import type { FileContentResponse, SessionInfo, Workspace } from "../api";
+import type { FileContentResponse, SessionInfo, SessionStatus, Workspace } from "../api";
 import { initialAppState, type AppState } from "../appState";
 import { markCachedNewSessionInfo } from "../cachedNewSessions";
+import { PI_WEB_CAPABILITIES } from "../../../shared/capabilities";
 import { machineScopedPluginId } from "../../../shared/machinePluginIds";
 import { corePlugin } from "./core";
 import { PluginRegistry } from "./registry";
@@ -42,6 +43,7 @@ function createContext(statePatch: Partial<AppState> = {}) {
     deleteWorkspace: vi.fn(() => { calls.push("deleteWorkspace"); }),
     startSession: vi.fn(() => { calls.push("startSession"); }),
     archiveSession: vi.fn(() => { calls.push("archiveSession"); }),
+    reloadSession: vi.fn(() => { calls.push("reloadSession"); }),
     deleteCachedNewSession: vi.fn(() => { calls.push("deleteCachedNewSession"); }),
     stopActiveWork: vi.fn(() => { calls.push("stopActiveWork"); }),
   };
@@ -147,6 +149,35 @@ describe("PluginRegistry", () => {
     const archivedActions = registry.getActions(createContext({ selectedSession: { ...testSession(), archived: true, archivedAt: "2026-05-20T00:00:00.000Z" } }).context);
     expect(archivedActions.find((action) => action.id === "core:session.archive")?.enabled).toBe(false);
     expect(archivedActions.find((action) => action.id === "core:session.delete")?.enabled).toBe(false);
+  });
+
+  it("enables session reload only for a writable session on a capable, idle runtime", () => {
+    const registry = new PluginRegistry();
+    registry.register({ id: "core", plugin: corePlugin });
+    const reloadRuntime = { local: { machineId: "local", ok: true as const, checkedAt: "now", capabilities: [PI_WEB_CAPABILITIES.sessionsReload] } };
+
+    const reloadable = registry.getActions(createContext({ selectedSession: testSession(), machineRuntimes: reloadRuntime }).context);
+    expect(reloadable.find((action) => action.id === "core:session.reload")?.enabled).toBe(true);
+
+    const noCapability = registry.getActions(createContext({ selectedSession: testSession() }).context);
+    expect(noCapability.find((action) => action.id === "core:session.reload")?.enabled).toBe(false);
+
+    const archived = registry.getActions(createContext({ selectedSession: { ...testSession(), archived: true, archivedAt: "2026-05-20T00:00:00.000Z" }, machineRuntimes: reloadRuntime }).context);
+    expect(archived.find((action) => action.id === "core:session.reload")?.enabled).toBe(false);
+
+    const busy = registry.getActions(createContext({ selectedSession: testSession(), machineRuntimes: reloadRuntime, status: testStatus({ isStreaming: true }) }).context);
+    expect(busy.find((action) => action.id === "core:session.reload")?.enabled).toBe(false);
+  });
+
+  it("routes session reload through the runtime context", () => {
+    const registry = new PluginRegistry();
+    registry.register({ id: "core", plugin: corePlugin });
+    const { context, calls } = createContext({ selectedSession: testSession(), machineRuntimes: { local: { machineId: "local", ok: true, checkedAt: "now", capabilities: [PI_WEB_CAPABILITIES.sessionsReload] } } });
+    const action = registry.getActions(context).find((candidate) => candidate.id === "core:session.reload");
+
+    if (action !== undefined) void action.run();
+
+    expect(calls).toEqual(["reloadSession"]);
   });
 
   it("routes browser-cached new session delete through the runtime context", () => {
@@ -565,6 +596,20 @@ function testFileContent(path = "README.md"): FileContentResponse {
     content: "",
     truncated: false,
     binary: false,
+  };
+}
+
+function testStatus(patch: Partial<SessionStatus> = {}): SessionStatus {
+  return {
+    sessionId: "s1",
+    isStreaming: false,
+    isCompacting: false,
+    isBashRunning: false,
+    pendingMessageCount: 0,
+    queuedMessages: [],
+    tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    cost: 0,
+    ...patch,
   };
 }
 

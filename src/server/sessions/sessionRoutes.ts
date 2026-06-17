@@ -21,6 +21,12 @@ interface PromptRequestBody {
   attachments?: unknown;
 }
 
+interface AttachmentsRequestBody {
+  cwd?: unknown;
+  attachments?: unknown;
+  folder?: unknown;
+}
+
 export function registerSessionRoutes(app: FastifyInstance, sessions: PiSessionService, eventHub: SessionEventHub, prefix = ""): void {
   app.get<{ Querystring: SessionQuery }>(`${prefix}/sessions`, async (request, reply) => {
     if (request.query.cwd === undefined || request.query.cwd === "") return reply.code(400).send({ error: "cwd query parameter is required" });
@@ -96,6 +102,8 @@ export function registerSessionRoutes(app: FastifyInstance, sessions: PiSessionS
   app.post<{ Params: { sessionId: string }; Body: { cwd?: unknown; level?: unknown } | undefined }>(`${prefix}/sessions/:sessionId/thinking-level`, async (request, reply) => {
     try {
       const body = optionalRecord(request.body);
+      // The level string is validated against the session's live available levels
+      // in the service, so it stays correct if pi changes the set.
       return await sessions.setThinkingLevel(sessionLookupFromBody(request.params.sessionId, body), requireThinkingLevel(body["level"]));
     } catch (error) {
       return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
@@ -124,6 +132,18 @@ export function registerSessionRoutes(app: FastifyInstance, sessions: PiSessionS
       const body = optionalRecord(request.body);
       await sessions.prompt(sessionLookupFromBody(request.params.sessionId, body), body["text"], body["streamingBehavior"], body["attachments"]);
       return { accepted: true };
+    } catch (error) {
+      return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
+    }
+  });
+
+  app.post<{ Params: { sessionId: string }; Body: AttachmentsRequestBody | undefined }>(`${prefix}/sessions/:sessionId/attachments`, async (request, reply) => {
+    try {
+      const body = optionalRecord(request.body);
+      const folder = body["folder"];
+      if (folder !== undefined && typeof folder !== "string") throw new Error("folder field must be a string");
+      const attachments = await sessions.saveAttachments(sessionLookupFromBody(request.params.sessionId, body), body["attachments"], folder);
+      return { attachments };
     } catch (error) {
       return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
     }
@@ -227,6 +247,15 @@ export function registerSessionRoutes(app: FastifyInstance, sessions: PiSessionS
     }
   });
 
+  app.post<{ Params: { sessionId: string }; Body: { cwd?: unknown } | undefined }>(`${prefix}/sessions/:sessionId/reload`, async (request, reply) => {
+    try {
+      await sessions.reload(sessionLookupFromBody(request.params.sessionId, optionalRecord(request.body)));
+      return { reloaded: true };
+    } catch (error) {
+      return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
+    }
+  });
+
   app.post<{ Params: { sessionId: string }; Body: { cwd?: unknown } | undefined }>(`${prefix}/sessions/:sessionId/detach-parent`, async (request, reply) => {
     try {
       await sessions.detachParent(sessionLookupFromBody(request.params.sessionId, optionalRecord(request.body)));
@@ -284,9 +313,9 @@ function requireString(record: Record<string, unknown>, field: string): string {
   return value;
 }
 
-function requireThinkingLevel(value: unknown): "off" | "minimal" | "low" | "medium" | "high" | "xhigh" {
-  if (value === "off" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh") return value;
-  throw new Error("level field is invalid");
+function requireThinkingLevel(value: unknown): string {
+  if (typeof value !== "string" || value === "") throw new Error("level field is invalid");
+  return value;
 }
 
 function optionalField<T>(key: string, value: T | undefined): Record<string, T> | object {

@@ -4,7 +4,7 @@ import type { SessionActivity, SessionInfo, SessionStatus } from "../api";
 import { isCachedNewSessionInfo } from "../cachedNewSessions";
 import { isSessionActive } from "../../../shared/activity";
 import { actionMenuPanelStyle } from "./actionMenu";
-import { renderActionActivityIndicator } from "./activityBadge";
+import { renderActionActivityIndicator, type ActivityIndicatorKind } from "./activityBadge";
 import type { KeyboardNavigableSection } from "./navigationFocus";
 import { activateSelectableRow, focusSelectedOrFirstSelectableRow, handleSelectableRowKeyboard } from "./selectableRow";
 import { listStyles } from "./shared";
@@ -27,9 +27,11 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   @property({ attribute: false }) sessions: SessionInfo[] = [];
   @property({ attribute: false }) statuses: Record<string, SessionStatus> = {};
   @property({ attribute: false }) activities: Record<string, SessionActivity> = {};
+  @property({ attribute: false }) sending: Record<string, true> = {};
   @property({ attribute: false }) selected?: SessionInfo;
   @property({ type: Boolean }) canStart = false;
   @property({ type: Boolean }) canDeleteArchived = false;
+  @property({ type: Boolean }) canReload = false;
   @property({ type: String }) archivedDeleteUnavailableMessage = "Update and restart Pi-Web on this machine to delete archived sessions.";
   @property({ type: Boolean, reflect: true }) collapsible = false;
   @property({ type: Boolean, reflect: true }) collapsed = false;
@@ -48,6 +50,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   @property({ attribute: false }) onDeleteArchived?: (session: SessionInfo) => void | Promise<void>;
   @property({ attribute: false }) onDeleteArchivedMany?: (sessions: SessionInfo[]) => void | Promise<void>;
   @property({ attribute: false }) onDetachParent?: (session: SessionInfo) => void;
+  @property({ attribute: false }) onReload?: (session: SessionInfo) => void;
 
   @state() private openMenuSessionId: string | undefined;
   @state() private menuStyle = "";
@@ -225,9 +228,10 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
                     <button class="danger" title=${this.canDeleteArchived ? "Permanently delete archived session" : this.archivedDeleteUnavailableMessage} ?disabled=${!this.canDeleteArchived} @click=${() => { this.openMenuSessionId = undefined; this.confirmDeleteArchived(session); }}>Delete archived session</button>
                   `
                   : html`
-                    ${session.parentSessionPath !== undefined ? html`<button title="Detach from parent" @click=${() => { this.openMenuSessionId = undefined; this.onDetachParent?.(session); }}>Detach from parent</button>` : null}
                     <button title="Archive session" @click=${() => { this.openMenuSessionId = undefined; this.onArchive?.(session); }}>Archive</button>
                     ${descendantCount > 0 ? html`<button title="Archive this session and its descendants" @click=${() => { this.openMenuSessionId = undefined; this.confirmArchiveWithDescendants(session, descendantCount); }}>Archive with descendants (${descendantCount})</button>` : null}
+                    ${session.parentSessionPath !== undefined ? html`<button title="Detach from parent" @click=${() => { this.openMenuSessionId = undefined; this.onDetachParent?.(session); }}>Detach from parent</button>` : null}
+                    ${this.canReload ? html`<button title=${isSessionActive(this.statuses[session.id], this.activities[session.id]) ? "Stop current session activity before reloading" : "Reload session from disk"} ?disabled=${isSessionActive(this.statuses[session.id], this.activities[session.id])} @click=${() => { this.openMenuSessionId = undefined; this.onReload?.(session); }}>Reload</button>` : null}
                   `}
             </div>
           ` : null}
@@ -360,8 +364,8 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   }
 
   private renderActivity(session: SessionInfo) {
-    if (isCachedNewSessionInfo(session) || session.archived === true) return undefined;
-    return renderActionActivityIndicator(isSessionActive(this.statuses[session.id], this.activities[session.id]) ? "session" : undefined, "Session active");
+    const kind = sessionRowActivityKind(session, this.statuses[session.id], this.activities[session.id], this.sending[session.id] === true);
+    return renderActionActivityIndicator(kind, kind === "sending" ? "Sending message" : "Session active");
   }
 
   static override styles = [listStyles, css`
@@ -413,6 +417,25 @@ function unarchivedDescendantCounts(sessions: SessionInfo[]): Map<string, number
   };
 
   return new Map(sessions.map((session) => [session.id, countFor(session, new Set())]));
+}
+
+/**
+ * Resolve the activity indicator kind for a session row, or undefined when the
+ * row should show no indicator. Pure so it can be unit-tested without rendering.
+ *
+ * "sending" (client-side upload in flight) is reported with its own kind, and
+ * takes precedence over server activity, so it can be colored distinctly to
+ * signal that it is not yet propagated to workspace/machine activity.
+ */
+export function sessionRowActivityKind(
+  session: SessionInfo,
+  status: SessionStatus | undefined,
+  activity: SessionActivity | undefined,
+  sending: boolean,
+): ActivityIndicatorKind | undefined {
+  if (isCachedNewSessionInfo(session) || session.archived === true) return undefined;
+  if (sending) return "sending";
+  return isSessionActive(status, activity) ? "session" : undefined;
 }
 
 export function sessionRowsForCurrentTree(sessions: SessionInfo[]): SessionRow[] {

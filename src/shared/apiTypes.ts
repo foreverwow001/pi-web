@@ -3,6 +3,8 @@ export type MachineStatus = "unknown" | "online" | "offline" | "error";
 
 export const PI_WEB_CAPABILITIES = {
   sessionsDeleteArchived: "sessions.deleteArchived",
+  sessionsReload: "sessions.reload",
+  promptAttachments: "prompt.attachments",
 } as const;
 
 export type PiWebCapability = typeof PI_WEB_CAPABILITIES[keyof typeof PI_WEB_CAPABILITIES];
@@ -55,6 +57,10 @@ export interface PiWebConfigValues {
   allowedHosts?: string[] | true;
   shortcuts?: PiWebShortcutConfig;
   plugins?: PiWebPluginConfigMap;
+  /** Maximum accepted HTTP request body size in bytes (uploads/attachments). */
+  maxUploadBytes?: number;
+  /** When true, LLMs can start new sessions via the spawn_session tool. */
+  spawnSessions?: boolean;
 }
 
 export type PiWebPluginScope = "bundled" | "local" | "user" | "project";
@@ -76,6 +82,7 @@ export interface PiWebConfigEnvOverrides {
   host: boolean;
   port: boolean;
   allowedHosts: boolean;
+  spawnSessions: boolean;
 }
 
 export interface PiWebConfigResponse {
@@ -141,6 +148,35 @@ export interface QueuedSessionMessage {
   text: string;
 }
 
+/**
+ * A binary attachment carried with a prompt. The wire format mirrors pi's own
+ * `ImageContent` shape (`{ type: "image", data, mimeType }`) so attachments are
+ * fully compatible with the underlying pi coding agent.
+ */
+export interface PromptAttachment {
+  /** Kind of attachment. Only images are supported by pi today. */
+  kind: "image";
+  /** IANA mime type (for example "image/png"). */
+  mimeType: string;
+  /** Base64-encoded binary payload (no data: URL prefix). */
+  data: string;
+  /** Optional original filename, used for previews and folder-mode filenames. */
+  name?: string;
+}
+
+/**
+ * How prompt attachments should be delivered to the session.
+ * - "inline": send the binary to pi as native image content (multimodal input).
+ * - "folder": save the file into the workspace and reference it from the prompt
+ *   text so the agent reads it with its own tools.
+ */
+export interface SavedPromptAttachment {
+  /** Workspace-relative path the attachment was written to. */
+  path: string;
+  mimeType: string;
+  size: number;
+}
+
 export interface SessionModel {
   provider?: string;
   id?: string;
@@ -149,7 +185,10 @@ export interface SessionModel {
   reasoning?: unknown;
 }
 
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+// Domain type is owned by pi and re-exported from the shared thinking-levels
+// module. Wire/data fields below intentionally use `string` so an unknown level
+// from a newer pi runtime parses and renders gracefully instead of failing.
+export type { ThinkingLevel } from "./thinkingLevels.js";
 
 export type IvyhouseFooterMode = "default" | "build" | "plan";
 export type IvyhouseFastOverride = "auto" | "on" | "off";
@@ -199,7 +238,7 @@ export interface ModelSelectionResponse {
 }
 
 export interface ThinkingLevelsResponse {
-  levels: ThinkingLevel[];
+  levels: string[];
 }
 
 export interface SessionExtensionStatus {
@@ -513,7 +552,8 @@ export type SessionUiEvent =
   | { type: "extension.ui.request"; request: unknown }
   | { type: "session.error"; message: string }
   | { type: "session.name"; sessionId: string; name?: string }
+  | { type: "session.created"; session: SessionInfo }
   | { type: "pi.event"; eventType: string };
 
-export type GlobalSessionEvent = Extract<SessionUiEvent, { type: "status.update" | "activity.update" | "session.name" }>;
+export type GlobalSessionEvent = Extract<SessionUiEvent, { type: "status.update" | "activity.update" | "session.name" | "session.created" }>;
 export type RealtimeEvent = GlobalSessionEvent | TerminalUiEvent | WorkspaceActivityUiEvent;

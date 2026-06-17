@@ -1,4 +1,4 @@
-import type { PiWebCapability, PiWebComponentStatus, PiWebInstallationInfo, PiWebRuntimeComponent, PiWebRuntimeResponse, PiWebVersionResponse } from "./apiTypes.js";
+import type { PiWebCapability, PiWebComponentStatus, PiWebInstallationInfo, PiWebRuntimeComponent, PiWebVersionResponse } from "./apiTypes.js";
 import { isPiWebCapability } from "./capabilities.js";
 
 export function parsePiWebVersionResponse(value: unknown): PiWebVersionResponse | undefined {
@@ -11,19 +11,6 @@ export function parsePiWebVersionResponse(value: unknown): PiWebVersionResponse 
   const sessiond = parsePiWebComponentStatus(components["sessiond"]);
   if (web === undefined || sessiond === undefined) return undefined;
   return { packageName, generatedAt, components: { web, sessiond } };
-}
-
-export function parsePiWebRuntimeResponse(value: unknown): PiWebRuntimeResponse | undefined {
-  if (!isRecord(value)) return undefined;
-  const packageName = value["packageName"];
-  const generatedAt = value["generatedAt"];
-  const components = value["components"];
-  if (typeof packageName !== "string" || packageName === "" || typeof generatedAt !== "string" || generatedAt === "" || !isRecord(components)) return undefined;
-  const web = parsePiWebRuntimeComponent(components["web"]);
-  const sessiond = parsePiWebRuntimeComponent(components["sessiond"]);
-  const capabilities = parsePiWebCapabilities(value["capabilities"]);
-  if (web === undefined || sessiond === undefined || capabilities === undefined) return undefined;
-  return { packageName, generatedAt, components: { web, sessiond }, capabilities };
 }
 
 export function parsePiWebRuntimeComponent(value: unknown): PiWebRuntimeComponent | undefined {

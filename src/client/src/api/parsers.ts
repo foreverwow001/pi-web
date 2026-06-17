@@ -1,4 +1,4 @@
-import type { ArchiveSessionsResponse, AuthProviderOption, AuthProviderStatus, AuthProvidersResponse, AuthStatusSource, AuthType, CommandOption, CommandResult, FileContentResponse, FileSuggestion, FileTreeEntry, FileTreeResponse, GitDiffResponse, GitFileState, GitStatusFile, GitStatusResponse, IvyhouseFooterControlsResponse, IvyhouseFastOverride, IvyhouseFooterMode, Machine, MachineHealth, MachineKind, MachineRuntime, MachineStatus, MessagePage, ModelSelectionResponse, OAuthFlowState, PiWebCapability, PiWebComponentStatus, PiWebConfigEnvOverrides, PiWebConfigResponse, PiWebConfigValues, PiWebInstallationInfo, PiWebPluginConfigMap, PiWebPluginInfo, PiWebPluginsResponse, PiWebPluginScope, PiWebReleaseStatus, PiWebRuntimeComponent, PiWebRuntimeResponse, PiWebServiceComponent, PiWebShortcutConfig, PiWebStatusMessage, PiWebStatusResponse, PiWebStatusSeverity, Project, QueuedSessionMessage, SessionExtensionStatus, SessionInfo, SessionModel, SessionStatus, SlashCommand, TerminalCommandRun, TerminalCommandRunStatus, TerminalInfo, ThinkingLevel, ThinkingLevelsResponse, Workspace, WorkspaceActivity, WorkspaceActivityResponse } from "../../../shared/apiTypes";
+import type { ArchiveSessionsResponse, AuthProviderOption, AuthProviderStatus, AuthProvidersResponse, AuthStatusSource, AuthType, CommandOption, CommandResult, FileContentResponse, FileSuggestion, FileTreeEntry, FileTreeResponse, GitDiffResponse, GitFileState, GitStatusFile, GitStatusResponse, IvyhouseFooterControlsResponse, IvyhouseFastOverride, IvyhouseFooterMode, Machine, MachineHealth, MachineKind, MachineRuntime, MachineStatus, MessagePage, ModelSelectionResponse, OAuthFlowState, PiWebCapability, PiWebComponentStatus, PiWebConfigEnvOverrides, PiWebConfigResponse, PiWebConfigValues, PiWebInstallationInfo, PiWebPluginConfigMap, PiWebPluginInfo, PiWebPluginsResponse, PiWebPluginScope, PiWebReleaseStatus, PiWebRuntimeComponent, PiWebRuntimeResponse, PiWebServiceComponent, PiWebShortcutConfig, PiWebStatusMessage, PiWebStatusResponse, PiWebStatusSeverity, Project, QueuedSessionMessage, SavedPromptAttachment, SessionExtensionStatus, SessionInfo, SessionModel, SessionStatus, SlashCommand, TerminalCommandRun, TerminalCommandRunStatus, TerminalInfo, ThinkingLevelsResponse, Workspace, WorkspaceActivity, WorkspaceActivityResponse } from "../../../shared/apiTypes";
 import { isPiWebCapability } from "../../../shared/capabilities";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -249,8 +249,10 @@ export function parseModelSelectionResponse(value: unknown): ModelSelectionRespo
   return { models: arrayOf(parseSessionModel)(record["models"]) };
 }
 
-function parseThinkingLevel(value: unknown): ThinkingLevel {
-  if (value !== "off" && value !== "minimal" && value !== "low" && value !== "medium" && value !== "high" && value !== "xhigh") throw new Error("Invalid thinking level");
+function parseThinkingLevel(value: unknown): string {
+  // pi owns the level set; accept any string so a newer pi runtime reporting an
+  // unknown level degrades gracefully instead of failing the whole response.
+  if (typeof value !== "string") throw new Error("Invalid thinking level");
   return value;
 }
 
@@ -477,6 +479,7 @@ function parsePiWebConfigValues(value: unknown): PiWebConfigValues {
     ...optionalField("allowedHosts", optionalAllowedHosts(record["allowedHosts"])),
     ...optionalField("shortcuts", optionalShortcuts(record["shortcuts"])),
     ...optionalField("plugins", optionalPlugins(record["plugins"])),
+    ...optionalField("spawnSessions", optionalBoolean(record, "spawnSessions")),
   };
 }
 
@@ -511,7 +514,7 @@ function optionalPlugins(value: unknown): PiWebPluginConfigMap | undefined {
 
 function parsePiWebConfigEnvOverrides(value: unknown): PiWebConfigEnvOverrides {
   const record = requireRecord(value);
-  return { host: requireBoolean(record, "host"), port: requireBoolean(record, "port"), allowedHosts: requireBoolean(record, "allowedHosts") };
+  return { host: requireBoolean(record, "host"), port: requireBoolean(record, "port"), allowedHosts: requireBoolean(record, "allowedHosts"), spawnSessions: requireBoolean(record, "spawnSessions") };
 }
 
 export function parsePiWebPluginsResponse(value: unknown): PiWebPluginsResponse {
@@ -689,6 +692,16 @@ export function parseAccepted(value: unknown): { accepted: true } {
   return { accepted: true };
 }
 
+export function parseSavedAttachments(value: unknown): SavedPromptAttachment[] {
+  const record = requireRecord(value);
+  return arrayOf(parseSavedAttachment)(record["attachments"]);
+}
+
+function parseSavedAttachment(value: unknown): SavedPromptAttachment {
+  const record = requireRecord(value);
+  return { path: requireString(record, "path"), mimeType: requireString(record, "mimeType"), size: requireNumber(record, "size") };
+}
+
 export function parseClosed(value: unknown): { closed: true } {
   const record = requireRecord(value);
   if (record["closed"] !== true) throw new Error("Expected closed response");
@@ -737,6 +750,19 @@ export function parseDetached(value: unknown): { detached: true } {
   const record = requireRecord(value);
   if (record["detached"] !== true) throw new Error("Expected detached response");
   return { detached: true };
+}
+
+export function parseReloaded(value: unknown): { reloaded: true } {
+  const record = requireRecord(value);
+  if (record["reloaded"] !== true) throw new Error("Expected reloaded response");
+  return { reloaded: true };
+}
+
+function optionalBoolean(record: Record<string, unknown>, key: string): boolean | undefined {
+  const value = record[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== "boolean") throw new Error(`Invalid PI WEB ${key} field`);
+  return value;
 }
 
 function optionalNumber(record: Record<string, unknown>, key: string): number | undefined {

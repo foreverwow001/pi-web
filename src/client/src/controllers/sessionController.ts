@@ -1,4 +1,4 @@
-import { api as defaultApi, type CommandResult, type SessionActivity, type SessionInfo, type SessionRef, type SessionStatus, type ThinkingLevel } from "../api";
+import { api as defaultApi, type CommandResult, type SessionActivity, type SessionInfo, type SessionRef, type SessionStatus } from "../api";
 import type { AppState } from "../appState";
 import { forgetCachedNewSession, isCachedNewSessionInfo, markCachedNewSessionInfo, rememberCachedNewSession, stripCachedNewSessionMarker } from "../cachedNewSessions";
 import { textMessage } from "../chatMessages";
@@ -52,6 +52,7 @@ export class SessionController {
   applyGlobalEvent(event: GlobalSessionEvent): void {
     if (event.type === "status.update") this.applyStatus(event.status);
     else if (event.type === "activity.update") this.applyActivity(event.activity);
+    else if (event.type === "session.created") this.applyCreatedSession(event.session);
     else this.applySessionName(event.sessionId, event.name);
   }
 
@@ -65,7 +66,11 @@ export class SessionController {
     this.socket.close();
     this.catchupStreamSessionId = undefined;
     this.clearPendingTranscriptEvents();
-    this.setState({ selectedSession: undefined, messages: [], messagePageStart: 0, messagePageEnd: 0, messagePageTotal: 0, isLoadingEarlierMessages: false, isReceivingPartialStream: false, status: undefined, activity: undefined });
+    // Note: sendingPrompts is intentionally NOT cleared here. Deselecting a
+    // session must not cancel the in-flight upload indicator of the session
+    // that is still sending; the per-session entry is cleared by send()'s
+    // finally block when the request settles.
+    this.setState({ selectedSession: undefined, messages: [], messagePageStart: 0, messagePageEnd: 0, messagePageTotal: 0, isLoadingEarlierMessages: false, isReceivingPartialStream: false, status: undefined, activity: undefined, availableThinkingLevels: [] });
   }
 
   deselectSession(options?: { forgetRememberedSelection?: boolean | undefined; updateUrl?: boolean | undefined }) {
@@ -90,7 +95,10 @@ export class SessionController {
       const session = await this.api.startSession(workspace.path, machineId);
       rememberCachedNewSession(session, machineId);
       const cachedSession = markCachedNewSessionInfo(session, machineId);
-      this.setState({ sessions: [cachedSession, ...this.getState().sessions] });
+      // Drop any entry the session.created broadcast may have inserted for this
+      // same session before the HTTP response resolved, so the cached marker
+      // (and its delete action) wins instead of leaving a duplicate badge.
+      this.setState({ sessions: [cachedSession, ...this.getState().sessions.filter((candidate) => candidate.id !== cachedSession.id)] });
       await this.selectSession(cachedSession);
     } catch (error) {
       this.setState({ error: String(error) });
@@ -136,10 +144,9 @@ export class SessionController {
       const [page, status] = await Promise.all([this.api.messages(session, { limit: MESSAGE_PAGE_SIZE }, selectedMachineId(this.getState())), this.api.status(session, selectedMachineId(this.getState()))]);
       if (seq !== this.selectionSeq || this.getState().selectedSession?.id !== session.id) return;
       const history = this.transcripts.mergeHistory(transcriptKey, page);
-      const isReceivingPartialStream = status.isStreaming;
-      this.catchupStreamSessionId = isReceivingPartialStream ? session.id : undefined;
-      this.setState({ ...history, isLoadingEarlierMessages: false, isReceivingPartialStream, status, activity: this.getState().sessionActivities[session.id] });
+      this.setState({ ...history, isLoadingEarlierMessages: false, ...this.setStreamCatchup(status.isStreaming ? session.id : undefined), status, activity: this.getState().sessionActivities[session.id], availableThinkingLevels: [] });
       this.applyStatus(status);
+      void this.refreshAvailableThinkingLevels();
       for (const event of buffered) this.applyEvent(event);
       this.socket.setHandler((event) => { this.applyEvent(event); });
       if (options?.updateUrl !== false) this.updateUrl();
@@ -172,15 +179,36 @@ export class SessionController {
 
   async send(text: string, attachments: PromptAttachmentPayload[] = [], streamingBehavior?: "steer" | "followUp") {
     const trimmed = text.trim();
-    if (attachments.length === 0 && trimmed.startsWith("/")) return this.runCommand(text);
-    if (attachments.length === 0 && isShellInput(text)) return this.runShell(text);
+    const hasAttachments = attachments.length > 0;
+    if (!hasAttachments && trimmed.startsWith("/")) return this.runCommand(text);
+    if (!hasAttachments && isShellInput(text)) return this.runShell(text);
     const session = this.getState().selectedSession;
     if (!session || session.archived === true) return;
+    // Capture the originating session/machine before any await so the request
+    // and its sending indicator stay bound to the right session even if the
+    // user navigates elsewhere mid-upload.
+    const sessionId = session.id;
+    const machineId = selectedMachineId(this.getState());
+    // Surface a per-session optimistic sending state. It covers the pre-receipt
+    // window (upload, server-side image resizing, first-session open) and is
+    // superseded by real server activity/messages once api.prompt resolves.
+    if (hasAttachments) this.markSendingPrompt(sessionId, true);
     try {
-      await this.api.prompt(session, text, attachments, streamingBehavior, selectedMachineId(this.getState()));
+      await this.api.prompt(session, text, attachments, streamingBehavior, machineId);
       this.markCachedNewSessionPersisted(session);
     } catch (error) {
       this.setState({ error: String(error) });
+    } finally {
+      if (hasAttachments) this.markSendingPrompt(sessionId, false);
+    }
+  }
+
+  private markSendingPrompt(sessionId: string, sending: boolean): void {
+    const current = this.getState().sendingPrompts;
+    if (sending) {
+      if (current[sessionId] !== true) this.setState({ sendingPrompts: { ...current, [sessionId]: true } });
+    } else if (sessionId in current) {
+      this.setState({ sendingPrompts: omitKey(current, sessionId) });
     }
   }
 
@@ -199,12 +227,21 @@ export class SessionController {
   async runCommand(text: string) {
     const session = this.getState().selectedSession;
     if (!session || session.archived === true) return;
-    this.setState({ messages: [...this.getState().messages, textMessage("user", text)] });
+    // Commands are not inserted into the transcript optimistically: a builtin
+    // command produces its own result line, and a runtime/skill command is
+    // forwarded to the agent, which streams back the canonical (expanded)
+    // message. Inserting the raw text here would leave a line that doesn't
+    // converge with server history and disappears on reload. Surface the same
+    // per-session sending indicator that send() uses for the pre-receipt window.
+    const sessionId = session.id;
+    this.markSendingPrompt(sessionId, true);
     try {
       this.applyCommandResult(await this.api.runCommand(session, text, selectedMachineId(this.getState())));
       this.markCachedNewSessionPersisted(session);
     } catch (error) {
       this.setState({ messages: [...this.getState().messages, textMessage("system", String(error))], error: String(error) });
+    } finally {
+      this.markSendingPrompt(sessionId, false);
     }
   }
 
@@ -347,6 +384,25 @@ export class SessionController {
     }
   }
 
+  async reloadSession(session = this.getState().selectedSession) {
+    if (session === undefined || isCachedNewSessionInfo(session) || session.archived === true) return;
+    const machineId = selectedMachineId(this.getState());
+    const runtime = this.getState().machineRuntimes[machineId];
+    if (runtime?.ok !== true || !supportsPiWebCapability(runtime, PI_WEB_CAPABILITIES.sessionsReload)) {
+      this.setState({ error: "Reloading sessions requires an updated Pi-Web runtime on this machine." });
+      return;
+    }
+    try {
+      await this.api.reloadSession(session.id, machineId);
+      this.transcripts.discard(this.sessionCacheKey(session.id));
+      if (this.getState().selectedSession?.id === session.id) {
+        await this.selectSession(session, { updateUrl: false });
+      }
+    } catch (error) {
+      this.setState({ error: String(error) });
+    }
+  }
+
   async detachParent(session = this.getState().selectedSession) {
     if (session?.parentSessionPath === undefined) return;
     try {
@@ -375,6 +431,7 @@ export class SessionController {
     if (!session || session.archived === true) return;
     try {
       this.applyStatus(await this.api.setModel(session, provider, modelId, selectedMachineId(this.getState())));
+      await this.refreshAvailableThinkingLevels();
     } catch (error) {
       this.setState({ error: String(error) });
     }
@@ -385,6 +442,7 @@ export class SessionController {
     if (!session || session.archived === true) return;
     try {
       this.applyStatus(await this.api.cycleModel(session, direction, selectedMachineId(this.getState())));
+      await this.refreshAvailableThinkingLevels();
     } catch (error) {
       this.setState({ error: String(error) });
     }
@@ -401,7 +459,19 @@ export class SessionController {
     }
   }
 
-  async setThinkingLevel(level: ThinkingLevel) {
+  /** Refresh the available thinking levels for the selected session's model. */
+  async refreshAvailableThinkingLevels() {
+    const session = this.getState().selectedSession;
+    if (!session || session.archived === true) {
+      if (this.getState().availableThinkingLevels.length > 0) this.setState({ availableThinkingLevels: [] });
+      return;
+    }
+    const levels = await this.listThinkingLevels();
+    if (this.getState().selectedSession?.id !== session.id) return;
+    this.setState({ availableThinkingLevels: levels });
+  }
+
+  async setThinkingLevel(level: string) {
     const session = this.getState().selectedSession;
     if (!session || session.archived === true) return;
     try {
@@ -443,7 +513,7 @@ export class SessionController {
         ...history,
         status,
         activity: this.getState().sessionActivities[sessionId],
-        isReceivingPartialStream: status.isStreaming,
+        ...this.setStreamCatchup(status.isStreaming ? sessionId : undefined),
       });
       this.applyStatus(status);
     } catch (error) {
@@ -521,6 +591,16 @@ export class SessionController {
     }
   }
 
+  private applyCreatedSession(session: SessionInfo) {
+    const state = this.getState();
+    // Only surface sessions for the workspace currently in view; others are
+    // picked up when their workspace is opened. Skip if already present (e.g.
+    // the optimistic insert from startSession in this same tab).
+    if (state.selectedWorkspace?.path !== session.cwd) return;
+    if (state.sessions.some((candidate) => candidate.id === session.id)) return;
+    this.setState({ sessions: [session, ...state.sessions] });
+  }
+
   private applyActivity(activity: SessionActivity) {
     this.setState({
       sessionActivities: { ...this.getState().sessionActivities, [activity.sessionId]: activity },
@@ -538,7 +618,7 @@ export class SessionController {
       status: state.selectedSession?.id === status.sessionId ? status : state.status,
       activity: state.selectedSession?.id === status.sessionId && clearsStaleActivity ? undefined : state.activity,
     });
-    if (this.catchupStreamSessionId === status.sessionId && !status.isStreaming) this.finishStreamCatchup(status.sessionId);
+    if (!status.isStreaming) this.finishStreamCatchup(status.sessionId);
     this.refreshTailWhenStatusIsAhead(status, state);
   }
 
@@ -622,10 +702,24 @@ export class SessionController {
     this.pendingTranscriptFrame = undefined;
   }
 
+  // Stream catch-up is a single mode with two coupled facets that must never
+  // drift: the private `catchupStreamSessionId` guard (which suppresses live
+  // transcript events while we lack the in-flight message prefix) and the
+  // public `isReceivingPartialStream` flag (which drives the "Catching up…"
+  // badge). Route every mutation of the mode through this helper so the guard
+  // and the badge can never disagree. Catch-up only ever applies to the
+  // selected session, so an active session id always implies the badge is on.
+  private setStreamCatchup(sessionId: string | undefined): Pick<AppState, "isReceivingPartialStream"> {
+    this.catchupStreamSessionId = sessionId;
+    return { isReceivingPartialStream: sessionId !== undefined };
+  }
+
   private finishStreamCatchup(sessionId: string) {
-    if (this.catchupStreamSessionId !== sessionId) return;
+    const isSelected = this.getState().selectedSession?.id === sessionId;
+    const wasCatchingUp = this.catchupStreamSessionId === sessionId || (isSelected && this.getState().isReceivingPartialStream);
+    if (!wasCatchingUp) return;
     this.catchupStreamSessionId = undefined;
-    if (this.getState().selectedSession?.id === sessionId) this.setState({ isReceivingPartialStream: false });
+    if (isSelected) this.setState({ isReceivingPartialStream: false });
     void this.refreshMessages(sessionId);
   }
 
@@ -643,7 +737,11 @@ export class SessionController {
 }
 
 function omitSessionActivity(activities: Record<string, SessionActivity>, sessionId: string): Record<string, SessionActivity> {
-  return Object.fromEntries(Object.entries(activities).filter(([id]) => id !== sessionId));
+  return omitKey(activities, sessionId);
+}
+
+function omitKey<T>(record: Record<string, T>, key: string): Record<string, T> {
+  return Object.fromEntries(Object.entries(record).filter(([id]) => id !== key));
 }
 
 function uniqueSessionsById(sessions: readonly SessionInfo[]): SessionInfo[] {

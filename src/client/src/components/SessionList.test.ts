@@ -1,6 +1,29 @@
 import { describe, expect, it } from "vitest";
-import type { SessionInfo } from "../api";
-import { sessionRowsForCurrentTree } from "./SessionList";
+import type { SessionInfo, SessionStatus } from "../api";
+import { markCachedNewSessionInfo } from "../cachedNewSessions";
+import { sessionRowActivityKind, sessionRowsForCurrentTree } from "./SessionList";
+
+describe("sessionRowActivityKind", () => {
+  const idle: SessionStatus = { sessionId: "s", isStreaming: false, isCompacting: false, isBashRunning: false, pendingMessageCount: 0, queuedMessages: [], tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, cost: 0 };
+
+  it("reports 'sending' for an uploading session, taking precedence over server activity", () => {
+    expect(sessionRowActivityKind(session("s"), idle, undefined, true)).toBe("sending");
+    expect(sessionRowActivityKind(session("s"), { ...idle, isStreaming: true }, undefined, true)).toBe("sending");
+  });
+
+  it("reports 'session' for server activity when not sending", () => {
+    expect(sessionRowActivityKind(session("s"), { ...idle, isStreaming: true }, undefined, false)).toBe("session");
+  });
+
+  it("reports undefined when idle and not sending", () => {
+    expect(sessionRowActivityKind(session("s"), idle, undefined, false)).toBeUndefined();
+  });
+
+  it("never shows an indicator for archived or cached-new sessions, even while sending", () => {
+    expect(sessionRowActivityKind({ ...session("s"), archived: true }, idle, undefined, true)).toBeUndefined();
+    expect(sessionRowActivityKind(markCachedNewSessionInfo(session("s")), idle, undefined, true)).toBeUndefined();
+  });
+});
 
 describe("sessionRowsForCurrentTree", () => {
   it("keeps archived ancestors visible while they have unarchived descendants", () => {

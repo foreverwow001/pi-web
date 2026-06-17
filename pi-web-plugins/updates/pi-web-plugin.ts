@@ -1,44 +1,16 @@
 import type { TemplateResult } from "lit";
-import type { HtmlTemplateTag, PiWebComponentStatus, PiWebInstallationInfo, PiWebPlugin, PiWebStatusMessage, PiWebStatusResponse, PluginRuntimeState } from "@jmfederico/pi-web/plugin-api";
+import type { HtmlTemplateTag, PiWebComponentStatus, PiWebPlugin, PiWebStatusResponse, PluginRuntimeState, WorkspacePanelTerminal } from "@jmfederico/pi-web/plugin-api";
+import { additionalCommands, formatVersion, installationLabel, messageCount, recommendedCommand, shouldShowUpdatesPanel, statusFor } from "./updatesLogic.js";
 
-function messagesFor(state: PluginRuntimeState | undefined): PiWebStatusMessage[] {
-  return state?.piWebStatus?.messages ?? [];
-}
-
-function statusFor(state: PluginRuntimeState | undefined): PiWebStatusResponse | undefined {
-  return state?.piWebStatus;
-}
-
-function messageCount(state: PluginRuntimeState | undefined): number {
-  return messagesFor(state).length;
-}
-
-function isLocalOrUnknownInstallation(installation: PiWebInstallationInfo | undefined): boolean {
-  return installation === undefined || installation.kind === "local" || installation.kind === "unknown";
-}
-
-function shouldShowUpdatesPanel(state: PluginRuntimeState | undefined): boolean {
-  const status = statusFor(state);
-  if (messageCount(state) > 0) return true;
-  if (status === undefined) return false;
-  return isLocalOrUnknownInstallation(status.components.web.installation)
-    || isLocalOrUnknownInstallation(status.components.sessiond.installation);
-}
-
-function formatVersion(version: string | undefined): string {
-  return version === undefined || version === "" ? "unknown" : version;
-}
-
-function installationLabel(installation: PiWebInstallationInfo | undefined): string {
-  if (installation === undefined) return "installation unknown";
-  if (installation.kind === "pi-package") {
-    const scope = installation.scope === undefined ? "" : ` · ${installation.scope}`;
-    const source = installation.source ?? "Pi package";
-    return `${source}${scope}`;
-  }
-  if (installation.kind === "npm-global") return "global npm package";
-  if (installation.kind === "local") return "local checkout";
-  return "installation unknown";
+function runCommandInTerminal(terminal: WorkspacePanelTerminal, label: string, command: string): void {
+  void terminal.runCommand({
+    title: label,
+    command,
+    open: true,
+    metadata: { "pi.plugin": "updates" },
+  }).catch((error: unknown) => {
+    console.error(`Updates plugin failed to run "${label}"`, error);
+  });
 }
 
 function renderComponent(html: HtmlTemplateTag, component: PiWebComponentStatus): TemplateResult {
@@ -57,35 +29,48 @@ function renderComponent(html: HtmlTemplateTag, component: PiWebComponentStatus)
   `;
 }
 
-function renderCommand(html: HtmlTemplateTag, label: string, command: string): TemplateResult {
+function renderCommandActions(html: HtmlTemplateTag, terminal: WorkspacePanelTerminal | undefined, label: string, command: string): TemplateResult {
+  return html`
+    <span class="updates-command-actions">
+      <button @click=${() => { void navigator.clipboard.writeText(command); }}>Copy</button>
+      ${terminal === undefined ? null : html`<button class="primary" @click=${() => { runCommandInTerminal(terminal, label, command); }}>Run</button>`}
+    </span>
+  `;
+}
+
+function renderCommand(html: HtmlTemplateTag, terminal: WorkspacePanelTerminal | undefined, label: string, command: string): TemplateResult {
   return html`
     <div class="updates-command">
       <span>${label}</span>
       <code>${command}</code>
-      <button @click=${() => { void navigator.clipboard.writeText(command); }}>Copy</button>
+      ${renderCommandActions(html, terminal, label, command)}
     </div>
   `;
 }
 
-function renderCommands(html: HtmlTemplateTag, status: PiWebStatusResponse): TemplateResult | undefined {
-  const commands = [
-    ["Update", status.commands.update],
-    ["Restart all", status.commands.restart],
-    ["Restart Web/UI", status.commands.restartWeb],
-    ["Restart session daemon", status.commands.restartSessiond],
-    ["Status", status.commands.status],
-  ].filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1] !== "");
-
-  if (commands.length === 0) return undefined;
+function renderCommands(html: HtmlTemplateTag, terminal: WorkspacePanelTerminal | undefined, status: PiWebStatusResponse): TemplateResult | undefined {
+  const recommended = recommendedCommand(status);
+  const additional = additionalCommands(status, recommended);
+  if (recommended === undefined && additional.length === 0) return undefined;
   return html`
-    <section>
-      <strong>Suggested commands</strong>
-      ${commands.map(([label, command]) => renderCommand(html, label, command))}
-    </section>
+    ${recommended === undefined ? null : html`
+      <section class="updates-recommended">
+        <strong>Recommended</strong>
+        <p class="muted">Run this one command to bring this installation fully up to date. Nothing else is required.</p>
+        ${renderCommand(html, terminal, recommended.label, recommended.command)}
+      </section>
+    `}
+    ${additional.length === 0 ? null : html`
+      <section>
+        <strong>${recommended === undefined ? "Suggested commands" : "Additional commands (optional)"}</strong>
+        ${recommended === undefined ? null : html`<p class="muted">Only needed for finer control, such as restarting a single service.</p>`}
+        ${additional.map((entry) => renderCommand(html, terminal, entry.label, entry.command))}
+      </section>
+    `}
   `;
 }
 
-function renderUpdatesPanel(html: HtmlTemplateTag, state: PluginRuntimeState | undefined): TemplateResult {
+function renderUpdatesPanel(html: HtmlTemplateTag, terminal: WorkspacePanelTerminal | undefined, state: PluginRuntimeState | undefined): TemplateResult {
   const status = statusFor(state);
   if (status === undefined) {
     return html`
@@ -108,6 +93,11 @@ function renderUpdatesPanel(html: HtmlTemplateTag, state: PluginRuntimeState | u
       .updates-version-row small { grid-column: 1 / -1; color: var(--pi-muted); }
       .updates-command { min-width: 0; display: grid; grid-template-columns: minmax(90px, auto) minmax(0, 1fr) auto; gap: 8px; align-items: center; }
       .updates-command code { overflow: auto; border: 1px solid var(--pi-border-muted); border-radius: 6px; background: var(--pi-bg); padding: 5px 7px; white-space: nowrap; }
+      .updates-command-inline { grid-template-columns: minmax(0, 1fr) auto; }
+      .updates-command-actions { display: inline-flex; gap: 6px; }
+      .updates-command-actions button.primary { border-color: var(--pi-accent-border); color: var(--pi-text-bright); }
+      .updates-recommended { border: 1px solid var(--pi-accent-border); border-radius: 8px; padding: 10px; background: var(--pi-surface); }
+      .updates-recommended > strong { color: var(--pi-text-bright); }
       .updates-meta { display: grid; gap: 2px; color: var(--pi-muted); font-size: 12px; }
       @media (max-width: 520px) {
         .updates-command { grid-template-columns: minmax(0, 1fr) auto; }
@@ -121,7 +111,12 @@ function renderUpdatesPanel(html: HtmlTemplateTag, state: PluginRuntimeState | u
           <article class=${`updates-message ${message.severity}`}>
             <div class="updates-message-title"><strong>${message.title}</strong><span>${message.severity}</span></div>
             <p>${message.body}</p>
-            ${message.command === undefined ? null : html`<code>${message.command}</code>`}
+            ${message.command === undefined ? null : html`
+              <div class="updates-command updates-command-inline">
+                <code>${message.command}</code>
+                ${renderCommandActions(html, terminal, message.title, message.command)}
+              </div>
+            `}
           </article>
         `)}
       </section>
@@ -132,7 +127,7 @@ function renderUpdatesPanel(html: HtmlTemplateTag, state: PluginRuntimeState | u
         ${renderComponent(html, status.components.sessiond)}
       </section>
 
-      ${renderCommands(html, status)}
+      ${renderCommands(html, terminal, status)}
 
       <section class="updates-meta">
         <span>Generated ${status.generatedAt}</span>
@@ -167,7 +162,7 @@ const plugin: PiWebPlugin = {
             const count = messageCount(context.state);
             return html`beta${count > 0 ? html` · ${String(count)}` : null}`;
           },
-          render: (context) => renderUpdatesPanel(html, context.state),
+          render: (context) => renderUpdatesPanel(html, context.terminal, context.state),
         },
       ],
     },

@@ -4,6 +4,7 @@ import type { AppAction } from "../actions";
 import { configApi, pluginsApi, type PiWebConfigResponse, type PiWebConfigValues, type PiWebPluginsResponse } from "../api";
 import type { SettingsSection } from "../settingsRoute";
 import "./settings/SettingsGeneralPanel";
+import "./settings/SettingsSessiondPanel";
 import "./settings/SettingsPluginsPanel";
 import "./settings/SettingsShortcutsPanel";
 
@@ -47,6 +48,7 @@ export class SettingsDialog extends LitElement {
           <div class="settings-body">
             <nav class="settings-nav" aria-label="Settings sections">
               ${this.renderNavButton("general", "General", "Server config")}
+              ${this.renderNavButton("sessiond", "Session daemon", "Runtime settings")}
               ${this.renderNavButton("plugins", "Plugins", "Enable and disable")}
               ${this.renderNavButton("shortcuts", "Keyboard", "Shortcuts")}
             </nav>
@@ -60,6 +62,19 @@ export class SettingsDialog extends LitElement {
   }
 
   private renderActiveSection(): TemplateResult {
+    if (this.section === "sessiond") {
+      return html`
+        <settings-sessiond-panel
+          .configResponse=${this.configResponse}
+          .loading=${this.loading}
+          .saving=${this.saving}
+          .error=${this.error}
+          .savedMessage=${this.savedMessage}
+          .onReload=${() => this.loadConfig()}
+          .onSave=${(config: PiWebConfigValues) => this.saveConfig(config)}
+        ></settings-sessiond-panel>
+      `;
+    }
     if (this.section === "shortcuts") {
       return html`
         <settings-shortcuts-panel

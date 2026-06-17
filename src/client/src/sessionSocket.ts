@@ -1,4 +1,4 @@
-import { globalSessionEvents, realtimeEvents, sessionEvents } from "./api";
+import { realtimeEvents, sessionEvents } from "./api";
 import type { GlobalSessionEvent, RealtimeEvent, SessionRef, SessionUiEvent } from "../../shared/apiTypes";
 
 export type { GlobalSessionEvent, RealtimeEvent, SessionUiEvent } from "../../shared/apiTypes";
@@ -129,68 +129,14 @@ export class RealtimeSocket {
   }
 }
 
-export class GlobalSessionSocket {
-  private socket: WebSocket | undefined;
-  private onEvent: ((event: GlobalSessionEvent) => void) | undefined;
-  private reconnectTimer?: number;
-  private reconnectDelay = 500;
-  private shouldReconnect = false;
-  private machineId = "local";
-
-  connect(onEvent: (event: GlobalSessionEvent) => void, machineId = "local"): void {
-    this.close();
-    this.machineId = machineId;
-    this.onEvent = onEvent;
-    this.shouldReconnect = true;
-    this.open();
-  }
-
-  close(): void {
-    this.shouldReconnect = false;
-    window.clearTimeout(this.reconnectTimer);
-    closeSocketQuietly(this.socket);
-    this.socket = undefined;
-    this.onEvent = undefined;
-    this.machineId = "local";
-  }
-
-  private open(): void {
-    if (!this.shouldReconnect) return;
-    const socket = globalSessionEvents(this.machineId);
-    this.socket = socket;
-    socket.onopen = () => {
-      this.reconnectDelay = 500;
-    };
-    socket.onmessage = (message) => void this.handleMessage(message.data);
-    socket.onerror = () => { socket.close(); };
-    socket.onclose = () => {
-      if (this.socket === socket) this.socket = undefined;
-      this.scheduleReconnect();
-    };
-  }
-
-  private scheduleReconnect(): void {
-    if (!this.shouldReconnect) return;
-    window.clearTimeout(this.reconnectTimer);
-    const delay = this.reconnectDelay;
-    this.reconnectDelay = Math.min(this.reconnectDelay * 1.6, 5000);
-    this.reconnectTimer = window.setTimeout(() => { this.open(); }, delay);
-  }
-
-  private async handleMessage(data: MessageEvent["data"]): Promise<void> {
-    const event = await parseSocketEvent(data);
-    if (isGlobalSessionEvent(event)) this.onEvent?.(event);
-  }
-}
-
 function isSessionUiEvent(event: unknown): event is SessionUiEvent {
   const type = eventType(event);
-  return ["message.append", "assistant.delta", "assistant.thinking.delta", "tool.start", "tool.update", "tool.end", "shell.start", "shell.chunk", "shell.end", "agent.start", "agent.end", "message.end", "round.usage", "status.update", "activity.update", "command.output", "session.error", "session.name", "pi.event"].includes(type);
+  return ["message.append", "assistant.delta", "assistant.thinking.delta", "tool.start", "tool.update", "tool.end", "shell.start", "shell.chunk", "shell.end", "agent.start", "agent.end", "message.end", "round.usage", "status.update", "activity.update", "command.output", "session.error", "session.name", "session.created", "pi.event"].includes(type);
 }
 
 function isGlobalSessionEvent(event: unknown): event is GlobalSessionEvent {
   const type = eventType(event);
-  return type === "status.update" || type === "activity.update" || type === "session.name";
+  return type === "status.update" || type === "activity.update" || type === "session.name" || type === "session.created";
 }
 
 function isRealtimeEvent(event: unknown): event is RealtimeEvent {

@@ -1,6 +1,8 @@
 import { isSessionActive } from "../../../../shared/activity";
+import { PI_WEB_CAPABILITIES, supportsPiWebCapability } from "../../../../shared/capabilities";
 import type { AppState } from "../../appState";
 import { isCachedNewSessionInfo } from "../../cachedNewSessions";
+import { selectedMachineId } from "../../controllers/types";
 import { isWorkspaceDeletionPending } from "../../workspaceDeletion";
 import type { PluginAction } from "../types";
 
@@ -174,6 +176,14 @@ export function createCoreActions(): PluginAction[] {
       run: (context) => context.archiveSession(),
     },
     {
+      id: "session.reload",
+      title: "Reload Session",
+      description: "Re-read the selected session from disk to pick up entries written by another process",
+      group: "Session",
+      enabled: hasReloadableSession,
+      run: (context) => context.reloadSession(),
+    },
+    {
       id: "session.delete",
       title: "Delete New Session",
       description: "Delete the selected browser-cached new session",
@@ -212,4 +222,12 @@ function hasArchivableSession(context: { state: AppState }): boolean {
 
 function hasCachedNewSession(context: { state: AppState }): boolean {
   return isCachedNewSessionInfo(context.state.selectedSession);
+}
+
+function hasReloadableSession(context: { state: AppState }): boolean {
+  const session = context.state.selectedSession;
+  if (session === undefined || session.archived === true || isCachedNewSessionInfo(session)) return false;
+  const runtime = context.state.machineRuntimes[selectedMachineId(context.state)];
+  if (runtime?.ok !== true || !supportsPiWebCapability(runtime, PI_WEB_CAPABILITIES.sessionsReload)) return false;
+  return !isSessionActive(context.state.status, context.state.activity);
 }

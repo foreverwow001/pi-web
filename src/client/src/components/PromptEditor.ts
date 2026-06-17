@@ -44,6 +44,7 @@ export class PromptEditor extends LitElement {
   @property({ type: Boolean }) isCompacting = false;
   @property({ type: Boolean }) canStop = false;
   @property({ attribute: false }) status?: SessionStatus;
+  @property({ type: Boolean }) sending = false;
   @property({ attribute: false }) onSend?: (text: string, attachments?: PromptAttachmentPayload[], streamingBehavior?: "steer" | "followUp") => void;
   @property({ attribute: false }) onStop?: () => void;
   @property({ attribute: false }) onSelectModel?: () => void;
@@ -96,6 +97,7 @@ export class PromptEditor extends LitElement {
     const inputMode = inputModeForDraft(this.draft);
     const shellMode = inputMode.kind === "shell";
     const queuesInput = this.canSteer || this.isCompacting;
+    const busy = this.disabled || this.sending;
     return html`
       <footer
         class=${`${shellMode ? "shell-mode" : ""}${this.isDraggingFile ? " dragging-file" : ""}`}
@@ -114,9 +116,9 @@ export class PromptEditor extends LitElement {
         <div class="actions">
           ${this.renderCompactStatus()}
           <input class="file-input" type="file" multiple accept=${ATTACHMENT_ACCEPT} @change=${(event: Event) => { void this.handleFileInputChange(event); }} />
-          <button class="attach-button" ?disabled=${this.disabled} title="Attach files" aria-label="Attach files" @click=${() => { this.openFilePicker(); }}>📎</button>
-          <button ?disabled=${this.disabled} title=${queuesInput ? "Queue until the current activity finishes" : "Send message"} @click=${() => { this.send("followUp"); }}>${queuesInput ? "Queue" : "Send"}</button>
-          ${this.canSteer && !this.isCompacting ? html`<button ?disabled=${this.disabled} title="Steer the current response before the next model call" @click=${() => { this.send("steer"); }}>Steer</button>` : null}
+          <button class="attach-button" ?disabled=${busy} title="Attach files" aria-label="Attach files" @click=${() => { this.openFilePicker(); }}>📎</button>
+          <button ?disabled=${busy} title=${queuesInput ? "Queue until the current activity finishes" : "Send message"} @click=${() => { this.send("followUp"); }}>${queuesInput ? "Queue" : "Send"}</button>
+          ${this.canSteer && !this.isCompacting ? html`<button ?disabled=${busy} title="Steer the current response before the next model call" @click=${() => { this.send("steer"); }}>Steer</button>` : null}
           <button ?disabled=${this.disabled || !this.canStop} title=${this.canStop ? "Stop current work and clear queued messages" : "Nothing running"} @click=${() => this.onStop?.()}>Stop</button>
         </div>
       </footer>
@@ -460,7 +462,7 @@ export class PromptEditor extends LitElement {
 
   private send(streamingBehavior?: "steer" | "followUp") {
     const text = this.draft.trim();
-    if ((text === "" && this.attachments.length === 0) || this.disabled) return;
+    if ((text === "" && this.attachments.length === 0) || this.disabled || this.sending) return;
     const attachments = this.attachments;
     this.draft = "";
     this.attachments = [];
