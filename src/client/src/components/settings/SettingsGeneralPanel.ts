@@ -71,6 +71,14 @@ export class SettingsGeneralPanel extends LitElement {
             <small>Enter one host per line, or choose “Allow every host” to write <code>true</code>.</small>
           </div>
 
+          <label class="field">
+            <span class="field-heading">
+              <span>External filesystem roots</span>
+            </span>
+            <textarea .value=${this.draft.allowedPathsText} rows="4" placeholder="~/SDKs&#10;/opt/reference" spellcheck="false" @input=${(event: Event) => { this.updateDraft({ allowedPathsText: textAreaValue(event) }); }}></textarea>
+            <small>Global allowlist for absolute <code>@</code> completions and file explorer reads outside a workspace. Enter one absolute path, Windows absolute path, or <code>~</code>-prefixed path per line. Leave empty to deny external paths by default.</small>
+          </label>
+
           ${this.renderEffectiveConfig()}
 
           <footer class="form-actions">
@@ -102,6 +110,7 @@ export class SettingsGeneralPanel extends LitElement {
           <div><dt>Host</dt><dd>${effective.host ?? html`<span class="muted">127.0.0.1 default</span>`}</dd></div>
           <div><dt>Port</dt><dd>${effective.port ?? html`<span class="muted">8504 default</span>`}</dd></div>
           <div><dt>Allowed hosts</dt><dd>${formatAllowedHosts(effective.allowedHosts)}</dd></div>
+          <div><dt>External roots</dt><dd>${formatAllowedPaths(effective.pathAccess?.allowedPaths)}</dd></div>
         </dl>
       </section>
     `;
@@ -171,6 +180,11 @@ function formatAllowedHosts(value: PiWebConfigValues["allowedHosts"]): string | 
   if (value === true) return "Any host";
   if (Array.isArray(value)) return value.length === 0 ? html`<span class="muted">None listed</span>` : value.join(", ");
   return html`<span class="muted">Unset</span>`;
+}
+
+function formatAllowedPaths(value: string[] | undefined): string | TemplateResult {
+  if (value === undefined || value.length === 0) return html`<span class="muted">External paths denied</span>`;
+  return value.join(", ");
 }
 
 function inputValue(event: Event): string {

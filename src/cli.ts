@@ -386,20 +386,21 @@ function restartOrder(refs: ServiceRef[]): ServiceRef[] {
 }
 
 function productionServiceDefinitions(options: InstallOptions, configPath: string, executables: ServiceExecutables): ServiceDefinition[] {
+  const environment = configEnvironment(options, configPath);
   return [
     {
       ...serviceRefs.sessiond,
       description: "PI WEB session daemon",
       shellCommand: `exec ${executables.sessiond.command}`,
       restart: "on-failure",
-      environment: {},
+      environment,
     },
     {
       ...serviceRefs.web,
       description: "PI WEB server",
       shellCommand: `exec ${executables.web.command}`,
       restart: "on-failure",
-      environment: configEnvironment(options, configPath),
+      environment,
       after: ["sessiond"],
       wants: ["sessiond"],
     },
@@ -429,13 +430,14 @@ function validateDevCheckout(root: string): void {
 }
 
 function devServiceDefinitions(options: InstallOptions, configPath: string, root: string): ServiceDefinition[] {
+  const environment = configEnvironment(options, configPath);
   return [
     {
       ...serviceRefs.sessiond,
       description: "PI WEB session daemon (dev)",
       shellCommand: "exec npm run start:sessiond",
       restart: "never",
-      environment: {},
+      environment,
       workingDirectory: root,
     },
     {
@@ -443,7 +445,7 @@ function devServiceDefinitions(options: InstallOptions, configPath: string, root
       description: "PI WEB UI dev server",
       shellCommand: `exec /usr/bin/env bash -c ${serviceShellQuote('trap "kill 0" EXIT; npm run dev:web & npm run dev:client & wait')}`,
       restart: "never",
-      environment: configEnvironment(options, configPath),
+      environment,
       after: ["sessiond"],
       wants: ["sessiond"],
       workingDirectory: root,

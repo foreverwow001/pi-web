@@ -19,15 +19,15 @@ import { TerminalService } from "./terminals/terminalService.js";
 import { registerTerminalRoutes } from "./terminals/terminalRoutes.js";
 import { getPiWebRuntimeComponent } from "./piWebStatus.js";
 import { SESSIOND_RUNTIME_CAPABILITIES } from "../shared/capabilities.js";
-import { effectivePiWebConfig, maxUploadBytes, spawnSessionsEnabled } from "../config.js";
+import { effectivePiWebConfig, maxUploadBytes, spawnSessionsEnabled, subsessionsEnabled } from "../config.js";
 
-const app = Fastify({ logger: true, bodyLimit: maxUploadBytes() });
+const { config } = effectivePiWebConfig();
+const app = Fastify({ logger: true, bodyLimit: maxUploadBytes(process.env, config) });
 await app.register(fastifyWebsocket);
 
 const eventHub = new SessionEventHub();
 const workspaceActivity = new WorkspaceActivityService(eventHub);
 const auth = new AuthService();
-const { config } = effectivePiWebConfig();
 const spawnTargets = spawnSessionsEnabled(process.env, config)
   ? new ProjectScopedSpawnTargetResolver({ projects: new ProjectService(new ProjectStore()), workspaces: new WorkspaceService() })
   : undefined;
@@ -36,6 +36,7 @@ const sessions = new PiSessionService(eventHub, {
   workspaceActivity,
   logger: app.log,
   ...(spawnTargets === undefined ? {} : { spawnTargets }),
+  subsessionsEnabled: spawnTargets !== undefined && subsessionsEnabled(process.env, config),
 });
 auth.subscribe((change) => { sessions.applyAuthChange(change); });
 const terminals = new TerminalService(eventHub, workspaceActivity);

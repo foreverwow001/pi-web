@@ -1,4 +1,4 @@
-import { mkdtemp, realpath, rm, truncate, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, truncate, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Readable } from "node:stream";
@@ -15,6 +15,7 @@ import type { SessionProxyDaemon } from "./sessiond/sessionProxyRoutes.js";
 import { PI_WEB_CAPABILITIES } from "../shared/capabilities.js";
 import { machineScopedPluginId } from "../shared/machinePluginIds.js";
 import { MAX_IMAGE_PREVIEW_BYTES } from "../shared/workspaceFiles.js";
+import type { PiWebConfigResponse, PiWebConfigValues } from "../shared/apiTypes.js";
 import type { Project, Workspace } from "./types.js";
 
 let app: FastifyInstance;
@@ -22,12 +23,14 @@ let tempDir: string;
 let projectDir: string;
 let remoteClient: MachineClient | undefined;
 let sessionDaemonRequests: CapturedSessionDaemonRequest[];
+let piWebConfig: PiWebConfigValues;
 
 beforeEach(async () => {
   tempDir = await realpath(await mkdtemp(join(tmpdir(), "pi-web-app-test-")));
   projectDir = join(tempDir, "project");
   remoteClient = undefined;
   sessionDaemonRequests = [];
+  piWebConfig = {};
   app = await buildApp({
     projects: new ProjectService(new ProjectStore(join(tempDir, "projects.json"))),
     workspaces: new WorkspaceService(),
@@ -48,6 +51,7 @@ beforeEach(async () => {
       }),
     }),
     sessionDaemon: fakeSessionDaemon(),
+    config: fakeConfigService(),
     piWebPlugins: {
       manifest: () => Promise.resolve({ plugins: [{ id: "fake", module: "/pi-web-plugins/fake/plugin.js?v=1", source: "test", scope: "local", machineSpecific: false }] }),
       plugins: () => Promise.resolve({ plugins: [{ id: "fake", module: "/pi-web-plugins/fake/plugin.js?v=1", source: "test", scope: "local", machineSpecific: false, enabled: true }] }),
@@ -215,6 +219,23 @@ describe("buildApp", () => {
     expect(sessionDaemonRequests).toHaveLength(1);
     const body = sessionDaemonRequests[0]?.body;
     expect(body).toMatchObject({ text: largeText });
+  });
+
+  it("proxies remote session reloads through the selected machine", async () => {
+    const addResponse = await app.inject({ method: "POST", url: "/api/machines", payload: { name: "Remote", baseUrl: "https://remote.example.test/" } });
+    const remote = addResponse.json<{ id: string }>();
+    const request = vi.fn(() => Promise.resolve({
+      statusCode: 200,
+      headers: { "content-type": "application/json" },
+      body: Readable.from([JSON.stringify({ reloaded: true })]),
+    }));
+    remoteClient = fakeRemoteClient({ request });
+
+    const response = await app.inject({ method: "POST", url: `/api/machines/${remote.id}/sessions/s1/reload`, payload: { cwd: "/repo" } });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ reloaded: true });
+    expect(request).toHaveBeenCalledWith("POST", "/api/sessions/s1/reload", { cwd: "/repo" });
   });
 
   it("forwards remote JSON request bodies and normalizes remote timeouts", async () => {
@@ -489,12 +510,90 @@ describe("buildApp", () => {
     expect(tooLargeResponse.statusCode).toBe(400);
     expect(tooLargeResponse.json()).toEqual({ error: "Image is too large to preview (limit 10 MB)" });
   });
+
+  it("keeps normal file suggestions workspace-local when path access config is invalid", async () => {
+    const addResponse = await app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { name: "Local Suggestions", path: projectDir, create: true },
+    });
+    expect(addResponse.statusCode).toBe(200);
+    await writeFile(join(projectDir, "sdk.md"), "local sdk\n");
+    await mkdir(join(projectDir, ".pi-web"), { recursive: true });
+    await writeFile(join(projectDir, ".pi-web", "config.json"), `${JSON.stringify({ version: 1, pathAccess: { allowedPaths: [""] } }, null, 2)}\n`);
+
+    const response = await app.inject({ method: "GET", url: `/api/files?cwd=${encodeURIComponent(projectDir)}&q=sdk&scope=all` });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual([{ path: "sdk.md", kind: "other" }]);
+  });
+
+  it("serves project-configured allowed external files through the workspace explorer", async () => {
+    const addResponse = await app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { name: "External", path: projectDir, create: true },
+    });
+    const project = addResponse.json<Project>();
+    const externalDir = join(tempDir, "external-docs");
+    const deniedFile = join(tempDir, "secret.md");
+    await mkdir(externalDir);
+    await writeFile(join(externalDir, "sdk.md"), "external sdk\n");
+    await writeFile(deniedFile, "secret\n");
+    await mkdir(join(projectDir, ".pi-web"), { recursive: true });
+    await writeFile(join(projectDir, ".pi-web", "config.json"), `${JSON.stringify({ version: 1, pathAccess: { allowedPaths: [externalDir] } }, null, 2)}\n`);
+
+    const workspacesResponse = await app.inject({ method: "GET", url: `/api/projects/${project.id}/workspaces` });
+    const workspace = workspacesResponse.json<Workspace[]>()[0];
+    if (workspace === undefined) throw new Error("Expected workspace");
+
+    const fileResponse = await app.inject({ method: "GET", url: `/api/projects/${project.id}/workspaces/${workspace.id}/file?path=${encodeURIComponent(join(externalDir, "sdk.md"))}` });
+    const treeResponse = await app.inject({ method: "GET", url: `/api/projects/${project.id}/workspaces/${workspace.id}/tree?path=${encodeURIComponent(externalDir)}` });
+    const suggestionResponse = await app.inject({ method: "GET", url: `/api/projects/${project.id}/workspaces/${workspace.id}/files?q=${encodeURIComponent(join(externalDir, "s"))}` });
+    const localSuggestionResponse = await app.inject({ method: "GET", url: `/api/projects/${project.id}/workspaces/${workspace.id}/files?q=sdk` });
+    const deniedResponse = await app.inject({ method: "GET", url: `/api/projects/${project.id}/workspaces/${workspace.id}/file?path=${encodeURIComponent(deniedFile)}` });
+
+    expect(fileResponse.statusCode).toBe(200);
+    expect(fileResponse.json()).toMatchObject({ path: join(externalDir, "sdk.md"), content: "external sdk\n", binary: false });
+    expect(treeResponse.statusCode).toBe(200);
+    expect(treeResponse.json()).toMatchObject({
+      path: externalDir,
+      entries: [expect.objectContaining({ name: "sdk.md", path: join(externalDir, "sdk.md"), type: "file" })],
+      truncated: false,
+    });
+    expect(suggestionResponse.statusCode).toBe(200);
+    expect(suggestionResponse.json()).toEqual([{ path: join(externalDir, "sdk.md"), kind: "other" }]);
+    expect(localSuggestionResponse.statusCode).toBe(200);
+    expect(localSuggestionResponse.json()).toEqual([]);
+    expect(deniedResponse.statusCode).toBe(400);
+    expect(deniedResponse.json()).toEqual({ error: "Path is outside allowed paths" });
+  });
 });
 
 interface CapturedSessionDaemonRequest {
   method: string;
   path: string;
   body?: unknown;
+}
+
+function fakeConfigService() {
+  return {
+    read: () => piWebConfigResponse(piWebConfig),
+    write: (config: PiWebConfigValues) => {
+      piWebConfig = config;
+      return piWebConfigResponse(config);
+    },
+  };
+}
+
+function piWebConfigResponse(config: PiWebConfigValues): PiWebConfigResponse {
+  return {
+    path: join(tempDir, "config.json"),
+    exists: false,
+    config,
+    effectiveConfig: config,
+    envOverrides: { host: false, port: false, allowedHosts: false, spawnSessions: false, subsessions: false },
+  };
 }
 
 function fakeSessionDaemon(): SessionProxyDaemon {

@@ -5,6 +5,7 @@ export const PI_WEB_CAPABILITIES = {
   sessionsDeleteArchived: "sessions.deleteArchived",
   sessionsReload: "sessions.reload",
   promptAttachments: "prompt.attachments",
+  workspaceFileSuggestions: "workspace.fileSuggestions",
 } as const;
 
 export type PiWebCapability = typeof PI_WEB_CAPABILITIES[keyof typeof PI_WEB_CAPABILITIES];
@@ -51,16 +52,29 @@ export interface PiWebPluginConfig {
   [key: string]: unknown;
 }
 
+export interface PiWebPathAccessConfig {
+  allowedPaths?: string[];
+}
+
 export interface PiWebConfigValues {
   host?: string;
   port?: number;
   allowedHosts?: string[] | true;
   shortcuts?: PiWebShortcutConfig;
   plugins?: PiWebPluginConfigMap;
+  /** External filesystem roots PI WEB may expose outside a workspace. */
+  pathAccess?: PiWebPathAccessConfig;
   /** Maximum accepted HTTP request body size in bytes (uploads/attachments). */
   maxUploadBytes?: number;
   /** When true, LLMs can start new sessions via the spawn_session tool. */
   spawnSessions?: boolean;
+  /**
+   * Beta: when true, LLMs can start tracked child sessions via the
+   * spawn_subsession / list_subsessions / check_subsession / read_subsession
+   * tools. Off by default
+   * while the capability stabilizes. Requires spawnSessions to be enabled.
+   */
+  subsessions?: boolean;
 }
 
 export type PiWebPluginScope = "bundled" | "local" | "user" | "project";
@@ -83,6 +97,7 @@ export interface PiWebConfigEnvOverrides {
   port: boolean;
   allowedHosts: boolean;
   spawnSessions: boolean;
+  subsessions: boolean;
 }
 
 export interface PiWebConfigResponse {

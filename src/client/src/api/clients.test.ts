@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PI_WEB_CAPABILITIES } from "../../../shared/capabilities";
 import type { TerminalCommandRun, Workspace } from "../../../shared/apiTypes";
-import { ivyhouseApi, machinesApi, piWebApi, sessionsApi, terminalsApi, workspacesApi } from "./clients";
+import { filesApi, ivyhouseApi, machinesApi, piWebApi, sessionsApi, terminalsApi, workspacesApi } from "./clients";
 
 const workspace: Workspace = {
   id: "w/1",
@@ -110,6 +110,26 @@ describe("session API compatibility", () => {
     const [url, init] = fetchCall(fetchMock, 0);
     expect(url).toBe("/api/machines/remote%20a/sessions/s%201/prompt");
     expect(JSON.parse(requestBody(init))).toEqual({ cwd: "/repo", text: "hello" });
+  });
+});
+
+describe("machine-scoped file suggestion API", () => {
+  it("uses the workspace-scoped route when the caller has enabled workspace-scoped suggestions", async () => {
+    const fetchMock = stubJsonFetch([]);
+
+    await filesApi.files("/repo", "README", { projectId: "p 1", workspaceId: "w/1", scope: "tracked", machineId: "remote a", workspaceScoped: true });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchCall(fetchMock, 0)[0]).toBe("/api/machines/remote%20a/projects/p%201/workspaces/w%2F1/files?q=README&scope=tracked");
+  });
+
+  it("falls back to the legacy cwd route when workspace-scoped suggestions are not enabled", async () => {
+    const fetchMock = stubJsonFetch([]);
+
+    await filesApi.files("/repo", "README", { projectId: "p 1", workspaceId: "w/1", scope: "tracked", machineId: "remote a" });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchCall(fetchMock, 0)[0]).toBe("/api/machines/remote%20a/files?q=README&scope=tracked&cwd=%2Frepo");
   });
 });
 

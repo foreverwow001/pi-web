@@ -1,8 +1,7 @@
-import { getProviders } from "@earendil-works/pi-ai";
 import type { AuthProviderOption, AuthProviderStatus, AuthType } from "../../shared/apiTypes.js";
 
 const OAUTH_ONLY_PROVIDERS = new Set(["github-copilot", "openai-codex"]);
-const BUILT_IN_MODEL_PROVIDERS = new Set(getProviders());
+const BUILT_IN_MODEL_PROVIDERS = new Set<string>();
 
 export interface AuthProviderModelRegistry {
   authStorage: {

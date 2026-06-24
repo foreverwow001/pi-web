@@ -49,6 +49,23 @@ describe("readWorkspaceFile", () => {
     await expect(readWorkspaceFile(root, "/etc/passwd")).rejects.toThrow("Absolute paths are not allowed");
   });
 
+  it("reads allowed absolute files outside the workspace", async () => {
+    const root = await tempWorkspace();
+    const external = await tempWorkspace();
+    await writeFile(join(external, "README.md"), "external docs\n");
+
+    const file = await readWorkspaceFile(root, join(external, "README.md"), { allowedPaths: [external] });
+
+    expect(file).toMatchObject({
+      path: join(external, "README.md"),
+      language: "markdown",
+      content: "external docs\n",
+      truncated: false,
+      binary: false,
+    });
+    await expect(readWorkspaceFile(root, join(external, "README.md"))).rejects.toThrow("Absolute paths are not allowed");
+  });
+
   it("detects binary files and omits binary content", async () => {
     const root = await tempWorkspace();
     await writeFile(join(root, "image.bin"), Buffer.from([0x66, 0x6f, 0x00, 0x6f]));

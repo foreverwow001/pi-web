@@ -18,6 +18,9 @@ export class SettingsSessiondPanel extends LitElement {
     // On by default: the effective config is the source of truth for the toggle
     // state, so an unset config file still shows the feature as enabled.
     const effectiveSpawn = config?.effectiveConfig.spawnSessions !== false;
+    const subsessionsOverridden = config?.envOverrides.subsessions === true;
+    // Beta, off by default; also requires spawn to be enabled.
+    const effectiveSubsessions = config?.effectiveConfig.subsessions === true && effectiveSpawn;
     return html`
       <div class="section-heading">
         <div>
@@ -49,10 +52,28 @@ export class SettingsSessiondPanel extends LitElement {
           </label>
           <small>When enabled, LLMs can start new sessions, constrained to a workspace (any worktree) of the same registered project so every spawned session stays visible here. On by default.</small>
         </div>
+        <div class="field">
+          <span class="field-heading">
+            <span>Allow agents to start tracked subsessions</span>
+            <span class="beta-badge">beta</span>
+            ${subsessionsOverridden ? html`<span class="override-badge">environment override</span>` : null}
+          </span>
+          <label class="toggle">
+            <input
+              type="checkbox"
+              .checked=${effectiveSubsessions}
+              ?disabled=${this.loading || this.saving || subsessionsOverridden || !effectiveSpawn}
+              @change=${(event: Event) => { void this.toggleSubsessions(event); }}
+            >
+            <span>Enable the <code>spawn_subsession</code> tools</span>
+          </label>
+          <small>Beta: agents can start child sessions they stay attached to (<code>spawn_subsession</code>, <code>list_subsessions</code>, <code>check_subsession</code>, <code>read_subsession</code>) and are notified when a child finishes. Requires "Allow agents to start sessions". Off by default.</small>
+        </div>
         <section class="effective-card" aria-label="Effective configuration summary">
           <h3>Effective after environment overrides</h3>
           <dl>
             <div><dt>Spawn sessions</dt><dd>${effectiveSpawn ? "Enabled" : html`<span class="muted">Disabled</span>`}</dd></div>
+            <div><dt>Subsessions</dt><dd>${effectiveSubsessions ? "Enabled" : html`<span class="muted">Disabled</span>`}</dd></div>
           </dl>
         </section>
       `}
@@ -69,6 +90,12 @@ export class SettingsSessiondPanel extends LitElement {
     const enabled = event.target instanceof HTMLInputElement && event.target.checked;
     const baseConfig = this.configResponse?.config ?? {};
     await this.onSave?.({ ...baseConfig, spawnSessions: enabled });
+  }
+
+  private async toggleSubsessions(event: Event): Promise<void> {
+    const enabled = event.target instanceof HTMLInputElement && event.target.checked;
+    const baseConfig = this.configResponse?.config ?? {};
+    await this.onSave?.({ ...baseConfig, subsessions: enabled });
   }
 
   static override styles = css`
@@ -99,6 +126,7 @@ export class SettingsSessiondPanel extends LitElement {
     .toggle input { width: 16px; height: 16px; }
     .toggle input:disabled { cursor: not-allowed; }
     .override-badge { border: 1px solid var(--pi-warning-border); border-radius: 999px; color: var(--pi-warning); background: var(--pi-warning-surface); padding: 2px 7px; font-size: 11px; font-weight: 600; text-transform: none; }
+    .beta-badge { border: 1px solid var(--pi-border); border-radius: 999px; color: var(--pi-muted); background: var(--pi-bg); padding: 2px 7px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
     .effective-card { display: grid; gap: 10px; }
     .effective-card dl { display: grid; gap: 8px; margin: 0; }
     .effective-card dl > div { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 12px; align-items: baseline; }
