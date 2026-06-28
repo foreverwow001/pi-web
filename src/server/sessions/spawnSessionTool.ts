@@ -1,15 +1,19 @@
 import { Type } from "typebox";
-import { defineTool } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export interface SpawnSessionResult {
   sessionId: string;
   cwd: string;
 }
 
+export type SpawnSessionModel = NonNullable<ExtensionContext["model"]>;
+
 export interface SpawnSessionInvocation {
   spawningCwd: string;
   prompt: string;
   cwd: string | undefined;
+  /** Current model from the dispatching session, used as the spawned session's default. */
+  model?: SpawnSessionModel;
 }
 
 export interface SpawnSessionToolDeps {
@@ -40,11 +44,16 @@ export function createSpawnSessionToolDefinition(spawningCwd: string, deps: Spaw
     description: "Start a new, independent pi-web session and send it an initial prompt. Use this to dispatch a fresh agent to continue work or follow a plan. The new session runs on its own and a human can interact with it; you do not receive its output.",
     promptSnippet: "spawn_session: start a new independent session with a first prompt",
     parameters: SpawnSessionParams,
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       // Failures throw: the agent loop turns the thrown message into an error
       // tool result the model sees, so the spawning agent can adapt (e.g. pick a
       // valid workspace) rather than crash.
-      const result = await deps.spawn({ spawningCwd, prompt: params.prompt, cwd: params.cwd });
+      const result = await deps.spawn({
+        spawningCwd,
+        prompt: params.prompt,
+        cwd: params.cwd,
+        ...(ctx.model === undefined ? {} : { model: ctx.model }),
+      });
       return {
         content: [{ type: "text", text: `Started session ${result.sessionId} in ${result.cwd}.` }],
         details: result,
