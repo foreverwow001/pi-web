@@ -1,4 +1,4 @@
-import type { ArchiveSessionsResponse, AuthProviderOption, AuthProviderStatus, AuthProvidersResponse, AuthStatusSource, AuthType, CommandOption, CommandResult, DeleteWorkspaceFileResponse, FileContentResponse, FileSuggestion, FileTreeEntry, FileTreeResponse, GitDiffResponse, GitFileState, GitStatusFile, GitStatusResponse, IvyhouseFooterControlsResponse, IvyhouseFastOverride, IvyhouseFooterMode, Machine, MachineHealth, MachineKind, MachineRuntime, MachineStatus, MessagePage, ModelSelectionResponse, MoveWorkspaceFileResponse, OAuthFlowState, PiWebCapability, PiWebComponentStatus, PiWebConfigEnvOverrides, PiWebConfigResponse, PiWebConfigValues, PiWebInstallationInfo, PiWebPluginConfigMap, PiWebPluginInfo, PiWebPluginsResponse, PiWebPluginScope, PiWebReleaseStatus, PiWebRuntimeComponent, PiWebRuntimeResponse, PiWebServiceComponent, PiWebShortcutConfig, PiWebStatusMessage, PiWebStatusResponse, PiWebStatusSeverity, Project, QueuedSessionMessage, SavedPromptAttachment, SessionCleanupExecuteResponse, SessionCleanupPreviewResponse, SessionCleanupProjectSummary, SessionCleanupThresholds, SessionCleanupTotals, SessionExtensionStatus, SessionInfo, SessionModel, SessionStatus, SlashCommand, TerminalCommandRun, TerminalCommandRunStatus, TerminalInfo, ThinkingLevelsResponse, WriteWorkspaceFileResponse, Workspace, WorkspaceActivity, WorkspaceActivityResponse } from "../../../shared/apiTypes";
+import type { ArchiveSessionsResponse, AuthProviderOption, AuthProviderStatus, AuthProvidersResponse, AuthStatusSource, AuthType, CommandOption, CommandResult, DeleteWorkspaceFileResponse, FileContentResponse, FileSuggestion, FileTreeEntry, FileTreeResponse, GitDiffResponse, GitFileState, GitStatusFile, GitStatusResponse, IvyhouseFooterControlsResponse, IvyhouseFastOverride, IvyhouseFooterMode, Machine, MachineHealth, MachineKind, MachineRuntime, MachineStatus, MessagePage, ModelSelectionResponse, MoveWorkspaceFileResponse, OAuthFlowState, PiWebCapability, PiWebComponentStatus, PiWebConfigEnvOverrides, PiWebConfigResponse, PiWebConfigValues, PiWebInstallationInfo, PiWebPluginConfigMap, PiWebPluginInfo, PiWebPluginsResponse, PiWebPluginScope, PiWebReleaseStatus, PiWebRuntimeComponent, PiWebRuntimeResponse, PiWebServiceComponent, PiWebShortcutConfig, PiWebStatusMessage, PiWebStatusResponse, PiWebStatusSeverity, Project, QueuedSessionMessage, SavedPromptAttachment, SessionBulkArchiveResponse, SessionBulkDeleteArchivedResponse, SessionBulkFailure, SessionCleanupExecuteResponse, SessionCleanupPreviewResponse, SessionCleanupProjectSummary, SessionCleanupThresholds, SessionCleanupTotals, SessionExtensionStatus, SessionInfo, SessionModel, SessionStatus, SlashCommand, TerminalCommandRun, TerminalCommandRunStatus, TerminalInfo, ThinkingLevelsResponse, WriteWorkspaceFileResponse, Workspace, WorkspaceActivity, WorkspaceActivityResponse } from "../../../shared/apiTypes";
 import { isPiWebCapability } from "../../../shared/capabilities";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -244,6 +244,33 @@ export function parseSessionCleanupExecuteResponse(value: unknown): SessionClean
     archivedSessionIds: arrayOfString(record["archivedSessionIds"], "archivedSessionIds"),
     deletedSessionIds: arrayOfString(record["deletedSessionIds"], "deletedSessionIds"),
   };
+}
+
+export function parseSessionBulkArchiveResponse(value: unknown): SessionBulkArchiveResponse {
+  const record = requireRecord(value);
+  if (record["archived"] !== true) throw new Error("Expected bulk archived response");
+  return {
+    archived: true,
+    archivedSessionIds: arrayOfString(record["archivedSessionIds"], "archivedSessionIds"),
+    failures: arrayOf(parseSessionBulkFailure)(record["failures"]),
+    generatedAt: requireString(record, "generatedAt"),
+  };
+}
+
+export function parseSessionBulkDeleteArchivedResponse(value: unknown): SessionBulkDeleteArchivedResponse {
+  const record = requireRecord(value);
+  if (record["deleted"] !== true) throw new Error("Expected bulk deleted response");
+  return {
+    deleted: true,
+    deletedSessionIds: arrayOfString(record["deletedSessionIds"], "deletedSessionIds"),
+    failures: arrayOf(parseSessionBulkFailure)(record["failures"]),
+    generatedAt: requireString(record, "generatedAt"),
+  };
+}
+
+function parseSessionBulkFailure(value: unknown): SessionBulkFailure {
+  const record = requireRecord(value);
+  return { sessionId: requireString(record, "sessionId"), error: requireString(record, "error") };
 }
 
 function parseSessionCleanupThresholds(value: unknown): SessionCleanupThresholds {
