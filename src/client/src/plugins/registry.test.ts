@@ -187,18 +187,21 @@ describe("PluginRegistry", () => {
     expect(archivedActions.find((action) => action.id === "core:session.delete")?.enabled).toBe(false);
   });
 
-  it("enables session reload only for a writable session on a capable, idle runtime", () => {
+  it("enables session disk reload only for a writable session on a capable, idle runtime", () => {
     const registry = new PluginRegistry();
     registry.register({ id: "core", plugin: corePlugin });
     const reloadRuntime = { local: { machineId: "local", ok: true as const, checkedAt: "now", capabilities: [PI_WEB_CAPABILITIES.sessionsReload] } };
 
     const reloadable = registry.getActions(createContext({ selectedSession: testSession(), machineRuntimes: reloadRuntime }).context);
-    expect(reloadable.find((action) => action.id === "core:session.reload")?.enabled).toBe(true);
+    const reloadableAction = reloadable.find((action) => action.id === "core:session.reload");
+    expect(reloadableAction?.enabled).toBe(true);
+    expect(reloadableAction?.title).toBe("Reload Session from Disk");
+    expect(reloadableAction?.description).toContain("Use /reload in the prompt for Pi runtime resources");
 
     const noCapability = registry.getActions(createContext({ selectedSession: testSession() }).context);
     const noCapabilityReload = noCapability.find((action) => action.id === "core:session.reload");
     expect(noCapabilityReload?.enabled).toBe(false);
-    expect(noCapabilityReload?.disabledReason).toBe("Update and restart Pi-Web on this machine to reload sessions.");
+    expect(noCapabilityReload?.disabledReason).toBe("Update and restart Pi-Web on this machine to reload sessions from disk.");
 
     const archived = registry.getActions(createContext({ selectedSession: { ...testSession(), archived: true, archivedAt: "2026-05-20T00:00:00.000Z" }, machineRuntimes: reloadRuntime }).context);
     expect(archived.find((action) => action.id === "core:session.reload")?.enabled).toBe(false);

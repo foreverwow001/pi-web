@@ -522,6 +522,73 @@ describe("SessionController", () => {
     expect(state.error).toContain("requires an updated Pi-Web runtime");
   });
 
+  it("reloads the selected session from disk, discards the cached transcript, and re-fetches history", async () => {
+    Object.defineProperty(globalThis, "localStorage", { value: new MemoryStorage(), configurable: true });
+    const reloadCalls: string[] = [];
+    const messageCalls: string[] = [];
+    let state: AppState = {
+      ...initialAppState(),
+      selectedWorkspace: workspace,
+      selectedSession: oldSession,
+      sessions: [oldSession],
+      machineRuntimes: { local: { machineId: "local", ok: true, checkedAt: "now", capabilities: [PI_WEB_CAPABILITIES.sessionsReload] } },
+    };
+    const api: typeof defaultApi = {
+      ...defaultApi,
+      reloadSession: (session) => {
+        reloadCalls.push(sessionLookupId(session));
+        return Promise.resolve({ reloaded: true });
+      },
+      messages: (session) => {
+        messageCalls.push(sessionLookupId(session));
+        return Promise.resolve(emptyPage);
+      },
+      status: (session) => Promise.resolve(status(sessionLookupId(session))),
+    };
+    const controller = new SessionController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      new InMemorySessionSelectionMemory(),
+      { api, socket: new FakeSocket() },
+    );
+
+    await controller.reloadSession(oldSession);
+
+    expect(reloadCalls).toEqual([oldSession.id]);
+    expect(messageCalls).toContain(oldSession.id);
+    expect(state.error).toBe("");
+  });
+
+  it("does not reload sessions from disk when the selected machine runtime does not support it", async () => {
+    const reloadCalls: string[] = [];
+    let state: AppState = {
+      ...initialAppState(),
+      selectedWorkspace: workspace,
+      selectedSession: oldSession,
+      sessions: [oldSession],
+    };
+    const api: typeof defaultApi = {
+      ...defaultApi,
+      reloadSession: (session) => {
+        reloadCalls.push(sessionLookupId(session));
+        return Promise.resolve({ reloaded: true });
+      },
+    };
+    const controller = new SessionController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      new InMemorySessionSelectionMemory(),
+      { api, socket: new FakeSocket() },
+    );
+
+    await controller.reloadSession(oldSession);
+
+    expect(reloadCalls).toEqual([]);
+    expect(state.error).toContain("Reloading sessions from disk requires an updated Pi-Web runtime");
+  });
+
   it("forgets archived selections when the archived section collapse clears selection", async () => {
     const archivedSession = { ...oldSession, archived: true, archivedAt: "later" };
     let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, sessions: [archivedSession] };

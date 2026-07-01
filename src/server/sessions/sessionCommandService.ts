@@ -52,6 +52,12 @@ export interface CommandEventPublisher {
   publishGlobal?(event: Extract<SessionUiEvent, { type: "session.name" }>): void;
 }
 
+export interface SessionCommandLifecycle<TSession extends CommandSession = CommandSession> {
+  onCompactionStart?: (session: TSession) => void;
+  onCompactionEnd?: (session: TSession, result: "success" | "error", detail?: string) => void;
+  reloadSession?: (session: TSession) => Promise<void>;
+}
+
 export interface SessionCommandNaming {
   listSessionNames?: (cwd: string) => Promise<readonly string[]>;
 }
@@ -70,10 +76,7 @@ export class SessionCommandService<TSession extends CommandSession = CommandSess
     private readonly getActive: GetCommandActiveSession<TSession>,
     private readonly prompt: (sessionId: string, text: string) => Promise<void>,
     private readonly events: CommandEventPublisher,
-    private readonly lifecycle: {
-      onCompactionStart?: (session: TSession) => void;
-      onCompactionEnd?: (session: TSession, result: "success" | "error", detail?: string) => void;
-    } = {},
+    private readonly lifecycle: SessionCommandLifecycle<TSession> = {},
     private readonly naming: SessionCommandNaming = {},
   ) {}
 
@@ -111,6 +114,7 @@ export class SessionCommandService<TSession extends CommandSession = CommandSess
     if (name === "session") return { type: "done", message: formatSessionStats(session) };
     if (name === "name") return this.nameSession(active, rest);
     if (name === "compact") return this.compact(session, rest);
+    if (name === "reload") return this.reload(session);
     if (name === "clone") return this.clone(active);
     if (name === "fork") return this.fork(active);
 
@@ -156,6 +160,19 @@ export class SessionCommandService<TSession extends CommandSession = CommandSess
         this.lifecycle.onCompactionEnd?.(session, "error", message);
       });
     return { type: "done", message: "Compaction started…" };
+  }
+
+  private async reload(session: TSession): Promise<ClientCommandResult> {
+    if (sessionHasActiveWork(session)) return { type: "unsupported", message: "Cannot reload while the session is active. Stop current activity before reloading." };
+    if (this.lifecycle.reloadSession === undefined) return { type: "unsupported", message: "/reload is not available for this session runtime." };
+
+    try {
+      await this.lifecycle.reloadSession(session);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { type: "unsupported", message: `Reload failed: ${message}` };
+    }
+    return { type: "done", message: "Session runtime resources reloaded. Extensions, skills, prompt templates, themes, and context/system prompt files are refreshed for this session. Reload the browser page separately for PI WEB browser plugin changes." };
   }
 
   private async clone(active: CommandActiveSession<TSession>): Promise<ClientCommandResult> {

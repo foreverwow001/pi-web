@@ -138,6 +138,30 @@ describe("SessionCommandService", () => {
     expect(active.runtime.session.compact).toHaveBeenCalledWith("focus on tests");
   });
 
+  it("reloads runtime resources through the injected lifecycle callback", async () => {
+    const active = activeSession();
+    const reloadSession = vi.fn(async () => { await Promise.resolve(); });
+    const service = new SessionCommandService(() => getActive(active), vi.fn(), eventPublisher(), { reloadSession });
+
+    await expect(service.run("s1", "/reload")).resolves.toEqual({
+      type: "done",
+      message: "Session runtime resources reloaded. Extensions, skills, prompt templates, themes, and context/system prompt files are refreshed for this session. Reload the browser page separately for PI WEB browser plugin changes.",
+    });
+    expect(reloadSession).toHaveBeenCalledWith(active.runtime.session);
+  });
+
+  it("rejects runtime reload while the session has active work", async () => {
+    const active = activeSession({ isBashRunning: true });
+    const reloadSession = vi.fn(async () => { await Promise.resolve(); });
+    const service = new SessionCommandService(() => getActive(active), vi.fn(), eventPublisher(), { reloadSession });
+
+    await expect(service.run("s1", "/reload")).resolves.toEqual({
+      type: "unsupported",
+      message: "Cannot reload while the session is active. Stop current activity before reloading.",
+    });
+    expect(reloadSession).not.toHaveBeenCalled();
+  });
+
   it("creates fork selection requests from newest message to oldest and responds with selected entry", async () => {
     const active = activeSession({
       getUserMessagesForForking: vi.fn(() => [

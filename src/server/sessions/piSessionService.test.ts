@@ -63,7 +63,7 @@ function fakeRuntime(sessionId = "session-1", patch: Partial<TestSession> = {}) 
   const customMessageCalls: { message: { customType: string; content: string; display: boolean; details?: unknown }; options: unknown }[] = [];
   const bindExtensionCalls: unknown[] = [];
   const listeners: ((event: unknown) => void)[] = [];
-  const calls = { abort: 0, bindExtensions: bindExtensionCalls, clearQueue: 0, dispose: 0, prompt: promptCalls, sendCustomMessage: customMessageCalls };
+  const calls = { abort: 0, bindExtensions: bindExtensionCalls, clearQueue: 0, dispose: 0, prompt: promptCalls, reload: 0, sendCustomMessage: customMessageCalls };
   const session: TestSession = {
     sessionId,
     sessionFile: `/tmp/${sessionId}.jsonl`,
@@ -94,6 +94,10 @@ function fakeRuntime(sessionId = "session-1", patch: Partial<TestSession> = {}) 
     },
     getSessionStats: () => ({ sessionId, totalMessages: 0, userMessages: 0, assistantMessages: 0, toolCalls: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, cost: 0 }),
     getContextUsage: () => undefined,
+    reload: () => {
+      calls.reload += 1;
+      return Promise.resolve();
+    },
     prompt: (text: string, options: unknown) => {
       calls.prompt.push({ text, options });
       return Promise.resolve();
@@ -536,6 +540,29 @@ describe("PiSessionService", () => {
     expect(result.skippedBusySessionIds).toEqual(["busy-open"]);
     expect(archivedInputs).toEqual([]);
     expect(fake.calls.abort).toBe(0);
+
+    await service.dispose();
+  });
+
+  it("runs /reload by refreshing the active runtime resources in place", async () => {
+    const hub = new CapturingSessionEventHub();
+    const fake = fakeRuntime("runtime-reload-session");
+    const service = new PiSessionService(hub, {
+      createAgentRuntime: runtimeCreator(fake.runtime),
+      sessionManager: sessionGateway([sessionRecord("runtime-reload-session")]),
+      heartbeatIntervalMs: 60_000,
+    });
+
+    await expect(service.runCommand(sessionRef("runtime-reload-session"), "/reload")).resolves.toEqual({
+      type: "done",
+      message: "Session runtime resources reloaded. Extensions, skills, prompt templates, themes, and context/system prompt files are refreshed for this session. Reload the browser page separately for PI WEB browser plugin changes.",
+    });
+
+    expect(fake.calls.reload).toBe(1);
+    expect(fake.calls.abort).toBe(0);
+    expect(fake.calls.dispose).toBe(0);
+    expect(hub.globalEvents.some((event) => event.type === "activity.update" && event.activity.sessionId === "runtime-reload-session" && event.activity.label === "resources reloaded")).toBe(true);
+    expect(hub.globalEvents.some((event) => event.type === "status.update" && event.status.sessionId === "runtime-reload-session")).toBe(true);
 
     await service.dispose();
   });

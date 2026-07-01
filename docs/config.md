@@ -34,7 +34,8 @@ Process restarts depend on the key:
 - `spawnSessions` / `subsessions`: restart the session daemon.
 - `pathAccess`: applies on the next request; existing file views may need a browser refresh.
 - `uploads.defaultFolder`: applies to newly opened Files upload dialogs and new direct drag/drop batches after config/workspace refresh.
-- `plugins`: reload the browser tab after changing plugin enablement.
+- `plugins`: reload the browser tab after changing PI WEB plugin enablement.
+- After changing Pi runtime resources outside PI WEB, type `/reload` in each idle session to refresh extensions, skills, prompt templates, themes, and context/system prompt files. Reload the browser page separately for browser plugin changes.
 - `shortcuts`: saved settings apply in the browser after config refresh/save.
 
 ## Global config example

@@ -238,6 +238,7 @@ export interface PiAgentSession {
   compact(instructions?: string): Promise<{ summary: string; tokensBefore: number }>;
   getUserMessagesForForking(): readonly { entryId: string; text: string }[];
   getSessionStats(): { sessionId: string; totalMessages: number; userMessages: number; assistantMessages: number; toolCalls: number; tokens: ClientSessionStatus["tokens"]; cost: number };
+  reload(): Promise<void>;
   getContextUsage(): ClientSessionStatus["contextUsage"] | undefined;
   prompt(text: string, options?: { streamingBehavior?: "steer" | "followUp"; images?: ImageContent[] }): Promise<void>;
   sendCustomMessage(message: { customType: string; content: string; display: boolean; details?: unknown }, options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" }): Promise<void>;
@@ -479,6 +480,7 @@ export class PiSessionService {
           this.publishActivity(session, result === "success" ? "compaction complete" : "compaction failed", result === "success" ? "idle" : "error", detail);
           this.publishStatus(session);
         },
+        reloadSession: (session) => this.reloadSessionRuntime(session),
       },
       { listSessionNames: (cwd) => this.listSessionNames(cwd) },
     );
@@ -1300,6 +1302,22 @@ export class PiSessionService {
     if (resolver === undefined) throw new Error("Extension UI resolver not found");
     resolver(response);
     return { accepted: true };
+  }
+
+  private async reloadSessionRuntime(session: PiAgentSession): Promise<void> {
+    if (this.hasActiveWork(session)) throw new Error("Stop current session activity before reloading");
+    this.publishActivity(session, "reloading resources", "active");
+    try {
+      await session.reload();
+      this.publishActivity(session, "resources reloaded", "idle");
+      this.publishStatus(session);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.publishActivity(session, "reload failed", "error", message);
+      this.events.publish(session.sessionId, { type: "session.error", message });
+      this.publishStatus(session);
+      throw error;
+    }
   }
 
   async archive(ref: PiSessionLookup): Promise<void> {

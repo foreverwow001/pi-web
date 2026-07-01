@@ -13,6 +13,11 @@ Plugins can currently:
 
 They do **not** run in the session daemon, do not get a server-side hook API, and are not sandboxed.
 
+## Runtime reload
+
+After changing Pi runtime resources outside PI WEB, type `/reload` in each idle session to refresh extensions, skills, prompt templates, themes, and context/system prompt files. Reload the browser page separately for newly discovered or changed PI WEB browser plugins.
+
+
 ## Trust model
 
 Plugins run as JavaScript in the browser app. Treat them as trusted code:

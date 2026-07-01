@@ -177,8 +177,8 @@ export function createCoreActions(): PluginAction[] {
     },
     {
       id: "session.reload",
-      title: "Reload Session",
-      description: "Re-read the selected session from disk to pick up entries written by another process",
+      title: "Reload Session from Disk",
+      description: "Close and re-open the selected session from its session file. Use /reload in the prompt for Pi runtime resources.",
       group: "Session",
       enabled: hasReloadableSession,
       disabledReason: reloadSessionDisabledReason,
@@ -236,7 +236,7 @@ function reloadSessionDisabledReason(context: { state: AppState }): string | und
   const session = context.state.selectedSession;
   if (session === undefined || session.archived === true || isCachedNewSessionInfo(session)) return undefined;
   if (isSessionActive(context.state.status, context.state.activity)) return undefined;
-  return missingCapabilityReason(context.state, PI_WEB_CAPABILITIES.sessionsReload, "reload sessions");
+  return missingCapabilityReason(context.state, PI_WEB_CAPABILITIES.sessionsReload, "reload sessions from disk");
 }
 
 function missingCapabilityReason(state: AppState, capability: PiWebCapability, action: string): string | undefined {

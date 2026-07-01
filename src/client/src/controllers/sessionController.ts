@@ -441,7 +441,7 @@ export class SessionController {
     const machineId = selectedMachineId(this.getState());
     const runtime = this.getState().machineRuntimes[machineId];
     if (runtime?.ok !== true || !supportsPiWebCapability(runtime, PI_WEB_CAPABILITIES.sessionsReload)) {
-      this.setState({ error: "Reloading sessions requires an updated Pi-Web runtime on this machine." });
+      this.setState({ error: "Reloading sessions from disk requires an updated Pi-Web runtime on this machine." });
       return;
     }
     try {

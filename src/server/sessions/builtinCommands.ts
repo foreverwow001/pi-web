@@ -20,7 +20,7 @@ export const BUILTIN_COMMANDS: ClientCommand[] = [
   { name: "new", description: "Start a new session", source: "builtin" },
   { name: "compact", description: "Manually compact session context", source: "builtin" },
   { name: "resume", description: "Resume a different session", source: "builtin" },
-  { name: "reload", description: "Reload keybindings, extensions, skills, prompts, and themes", source: "builtin" },
+  { name: "reload", description: "Reload Pi runtime resources for this session", source: "builtin" },
   { name: "quit", description: "Quit pi", source: "builtin" },
 ];
 
