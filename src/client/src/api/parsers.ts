@@ -179,12 +179,14 @@ function optionalWorkspaceEffectiveConfig(value: unknown): Workspace["effectiveC
 export function parseSessionInfo(value: unknown): SessionInfo {
   const record = requireRecord(value);
   const name = optionalString(record, "name");
+  const persisted = parseOptionalBoolean(record["persisted"], "persisted");
   const parentSessionPath = optionalString(record, "parentSessionPath");
   const archivedAt = optionalString(record, "archivedAt");
   return {
     id: requireString(record, "id"),
     path: requireString(record, "path"),
     cwd: requireString(record, "cwd"),
+    ...(persisted === undefined ? {} : { persisted }),
     ...(name === undefined ? {} : { name }),
     created: requireString(record, "created"),
     modified: requireString(record, "modified"),
@@ -200,6 +202,7 @@ export function parseSessionStatus(value: unknown): SessionStatus {
   const record = requireRecord(value);
   return {
     sessionId: requireString(record, "sessionId"),
+    ...optionalField("persisted", parseOptionalBoolean(record["persisted"], "persisted")),
     isStreaming: requireBoolean(record, "isStreaming"),
     isCompacting: requireBoolean(record, "isCompacting"),
     isBashRunning: requireBoolean(record, "isBashRunning"),

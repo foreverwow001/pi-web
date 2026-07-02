@@ -195,6 +195,35 @@ describe("PiSessionService", () => {
     expect(fake.calls.dispose).toBe(1);
   });
 
+  it("reports persistence from actual session-file existence for fresh active sessions", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-web-persisted-"));
+    const sessionFile = join(dir, "new-session.jsonl");
+    const hub = new CapturingSessionEventHub();
+    const fake = fakeRuntime("new-session", { sessionFile });
+    let service: PiSessionService | undefined;
+    try {
+      service = new PiSessionService(hub, {
+        createAgentRuntime: runtimeCreator(fake.runtime),
+        sessionManager: sessionGateway([]),
+        heartbeatIntervalMs: 60_000,
+      });
+
+      const session = await service.start("/workspace");
+      const createdEvent = hub.globalEvents.find((event) => event.type === "session.created");
+
+      expect(session).toMatchObject({ id: "new-session", path: sessionFile, persisted: false });
+      expect(createdEvent).toMatchObject({ type: "session.created", session: { id: "new-session", persisted: false } });
+      await expect(service.status(sessionRef("new-session"))).resolves.toMatchObject({ sessionId: "new-session", persisted: false });
+
+      await writeFile(sessionFile, '{"type":"session","id":"new-session"}\n', "utf8");
+
+      await expect(service.status(sessionRef("new-session"))).resolves.toMatchObject({ sessionId: "new-session", persisted: true });
+    } finally {
+      await service?.dispose();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("opens legacy id-only lookups from the default session store gateway", async () => {
     const hub = new CapturingSessionEventHub();
     const fake = fakeRuntime("legacy-session");
@@ -356,7 +385,7 @@ describe("PiSessionService", () => {
 
     const sessions = await service.list("/workspace");
     expect(sessions).toHaveLength(2);
-    expect(sessions[0]).toMatchObject({ id: "active" });
+    expect(sessions[0]).toMatchObject({ id: "active", persisted: true });
     expect(sessions[0]?.archived).toBeUndefined();
     expect(sessions[1]).toMatchObject({ id: "archived", archived: true, archivedAt: "2026-01-01T00:00:00.000Z" });
 

@@ -6,7 +6,7 @@ import { groupChatMessages, summarizeChatGroup, type ChatGroup } from "../chatGr
 import { capturePrependScrollAnchor, PREPEND_RESTORE_SETTLE_FRAMES, restorePrependScrollAnchor, type PrependScrollAnchor } from "../chatScrollAnchoring";
 import { shouldRequestEarlierMessages } from "../chatHistoryLoading";
 import { ChatScrollController, distanceFromScrollBottom, findFirstVisibleArticle, isNearScrollBottom, type ChatAnchorScrollPosition, type ChatScrollRestoreResult } from "../chatScrollPosition";
-import type { SessionActivity, SessionStatus } from "../api";
+import type { QueuedSessionMessage, SessionActivity, SessionStatus } from "../api";
 import { formatCost, formatTokenCount } from "../utils/format";
 import type { ChatLine, ChatPart } from "./shared";
 import { chatStyles } from "./shared";
@@ -48,6 +48,19 @@ function clampNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+export interface QueuedMessageSection {
+  heading: string;
+  detail: string;
+  messages: QueuedSessionMessage[];
+}
+
+export function chatQueuedMessageSections(clientQueued: QueuedSessionMessage[], serverQueued: QueuedSessionMessage[]): QueuedMessageSection[] {
+  return [
+    clientQueued.length === 0 ? undefined : { heading: "Queued until session starts", detail: "Will send once the backend session is ready", messages: clientQueued },
+    serverQueued.length === 0 ? undefined : { heading: "Queued messages", detail: `${String(serverQueued.length)} pending · Stop clears the queue`, messages: serverQueued },
+  ].filter((section): section is QueuedMessageSection => section !== undefined);
+}
+
 @customElement("chat-view")
 export class ChatView extends LitElement {
   @property({ attribute: false }) messages: ChatLine[] = [];
@@ -61,6 +74,7 @@ export class ChatView extends LitElement {
   @property({ type: Boolean }) isSendingPrompt = false;
   @property({ type: Boolean }) isCompacting = false;
   @property({ type: Number }) pendingMessageCount = 0;
+  @property({ attribute: false }) clientQueuedMessages: QueuedSessionMessage[] = [];
   @property({ attribute: false }) status?: SessionStatus;
   @property({ attribute: false }) activity?: SessionActivity;
   @property({ attribute: false }) onLoadMore?: () => void;
@@ -256,15 +270,18 @@ export class ChatView extends LitElement {
   }
 
   private renderQueuedMessages() {
-    const queued = this.status?.queuedMessages ?? [];
-    if (queued.length === 0) return null;
+    const serverQueued = this.status?.queuedMessages ?? [];
+    return html`${chatQueuedMessageSections(this.clientQueuedMessages, serverQueued).map((section) => this.renderQueuedMessageList(section))}`;
+  }
+
+  private renderQueuedMessageList(section: QueuedMessageSection) {
     return html`
       <aside class="queued-messages" aria-live="polite">
         <div class="queued-header">
-          <strong>Queued messages</strong>
-          <small>${queued.length} pending · Stop clears the queue</small>
+          <strong>${section.heading}</strong>
+          <small>${section.detail}</small>
         </div>
-        ${queued.map((message, index) => html`
+        ${section.messages.map((message, index) => html`
           <div class="queued-message">
             <span class="queued-kind">${message.kind === "steer" ? "Steer" : "Follow-up"} ${String(index + 1)}</span>
             <formatted-text .text=${message.text}></formatted-text>

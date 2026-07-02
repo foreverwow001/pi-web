@@ -1,4 +1,4 @@
-import type { AuthProviderOption, CommandOption, CommandResult, FileContentResponse, FileTreeEntry, GitDiffResponse, GitStatusResponse, Machine, MachineHealth, MachineRuntime, OAuthFlowState, PiWebStatusResponse, Project, SessionActivity, SessionInfo, SessionStatus, TerminalCommandRun, Workspace, WorkspaceActivity } from "./api";
+import type { AuthProviderOption, CommandOption, CommandResult, FileContentResponse, FileTreeEntry, GitDiffResponse, GitStatusResponse, Machine, MachineHealth, MachineRuntime, OAuthFlowState, PiWebStatusResponse, Project, QueuedSessionMessage, SessionActivity, SessionInfo, SessionStatus, TerminalCommandRun, Workspace, WorkspaceActivity } from "./api";
 import type { ChatLine } from "./components/shared";
 import type { QualifiedContributionId } from "./plugins/ids";
 import type { WorkspaceUploadBatchState } from "./workspaceUploadState";
@@ -20,6 +20,8 @@ export interface AppState {
   isReceivingPartialStream: boolean;
   /** Sessions with a prompt upload in flight, keyed by sessionId (client-owned). */
   sendingPrompts: Record<string, true>;
+  /** Client-side queued sends waiting for a just-created backend session, keyed by sessionId. */
+  clientQueuedSessionMessages: Record<string, QueuedSessionMessage[]>;
   /** Client-initiated session creation requests waiting for the server. */
   startingSessionCount: number;
   isLoadingProjects: boolean;
@@ -74,6 +76,7 @@ export type AuthDialogState =
 
 export type WorkspaceScopedStateReset = Pick<AppState,
   | "sessions"
+  | "clientQueuedSessionMessages"
   | "startingSessionCount"
   | "fileTree"
   | "expandedDirs"
@@ -92,6 +95,7 @@ export type WorkspaceScopedStateReset = Pick<AppState,
 export function resetWorkspaceScopedState(): WorkspaceScopedStateReset {
   return {
     sessions: [],
+    clientQueuedSessionMessages: {},
     startingSessionCount: 0,
     fileTree: [],
     expandedDirs: {},
@@ -125,6 +129,7 @@ export function initialAppState(): AppState {
     isLoadingEarlierMessages: false,
     isReceivingPartialStream: false,
     sendingPrompts: {},
+    clientQueuedSessionMessages: {},
     startingSessionCount: 0,
     isLoadingProjects: false,
     isLoadingWorkspaces: false,
