@@ -81,6 +81,18 @@ const replacementSession: SessionInfo = {
 
 const emptyPage: MessagePage = { messages: [], start: 0, total: 0 };
 
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolveDeferred: ((value: T) => void) | undefined;
+  const promise = new Promise<T>((resolve) => { resolveDeferred = resolve; });
+  if (resolveDeferred === undefined) throw new Error("Deferred promise was not initialized");
+  return { promise, resolve: resolveDeferred };
+}
+
 function status(sessionId: string): SessionStatus {
   return {
     sessionId,
@@ -256,6 +268,74 @@ describe("SessionController", () => {
     expect(state.sessions[0]?.messageCount).toBe(1);
     expect(isCachedNewSessionInfo(state.sessions[0])).toBe(false);
     expect(state.selectedSession?.messageCount).toBe(1);
+  });
+
+  it("tracks multiple pending session starts without blocking another start", async () => {
+    const firstStarted: SessionInfo = { ...oldSession, id: "started-session-1", path: "/tmp/started-session-1.jsonl" };
+    const secondStarted: SessionInfo = { ...oldSession, id: "started-session-2", path: "/tmp/started-session-2.jsonl" };
+    const startResolvers: ((session: SessionInfo) => void)[] = [];
+    let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, sessions: [] };
+    const api: typeof defaultApi = {
+      ...defaultApi,
+      startSession: () => new Promise<SessionInfo>((resolve) => { startResolvers.push(resolve); }),
+      messages: () => Promise.resolve(emptyPage),
+      status: (session) => Promise.resolve(status(sessionLookupId(session))),
+    };
+    const controller = new SessionController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      undefined,
+      { api, socket: new FakeSocket() },
+    );
+
+    const firstStart = controller.startSession();
+    const secondStart = controller.startSession();
+    expect(startResolvers).toHaveLength(2);
+    expect(state.startingSessionCount).toBe(2);
+
+    startResolvers[0]?.(firstStarted);
+    await firstStart;
+    expect(state.startingSessionCount).toBe(1);
+    expect(state.sessions.map((session) => session.id)).toEqual(["started-session-1"]);
+
+    startResolvers[1]?.(secondStarted);
+    await secondStart;
+    expect(state.startingSessionCount).toBe(0);
+    expect(state.sessions.map((session) => session.id)).toEqual(["started-session-2", "started-session-1"]);
+  });
+
+  it("removes a resolved session start from the pending count when inserting its row", async () => {
+    const started: SessionInfo = { ...oldSession, id: "started-session-1", path: "/tmp/started-session-1.jsonl" };
+    let resolveStart: ((session: SessionInfo) => void) | undefined;
+    const messageRequest = deferred<MessagePage>();
+    const statusRequest = deferred<SessionStatus>();
+    let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, sessions: [] };
+    const api: typeof defaultApi = {
+      ...defaultApi,
+      startSession: () => new Promise<SessionInfo>((resolve) => { resolveStart = resolve; }),
+      messages: () => messageRequest.promise,
+      status: () => statusRequest.promise,
+    };
+    const controller = new SessionController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      undefined,
+      { api, socket: new FakeSocket() },
+    );
+
+    const start = controller.startSession();
+    expect(state.startingSessionCount).toBe(1);
+    resolveStart?.(started);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(state.sessions.map((session) => session.id)).toEqual(["started-session-1"]);
+    expect(state.startingSessionCount).toBe(0);
+
+    messageRequest.resolve(emptyPage);
+    statusRequest.resolve(status(started.id));
+    await start;
   });
 
   it("recreates missing browser-cached new sessions and moves their draft", async () => {
