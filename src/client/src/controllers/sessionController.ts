@@ -55,7 +55,7 @@ interface PendingSessionStart {
 }
 
 interface SuppressedCreatedSession {
-  cwd: string;
+  session: SessionInfo;
   machineId: string;
 }
 
@@ -830,10 +830,11 @@ export class SessionController {
     if (pending === undefined) return;
     this.pendingSessionStarts.delete(tempId);
     const queuedSends = pending.queuedSends.splice(0);
-    this.clearSuppressedCreatedSessionsFor(pending.cwd, pending.machineId, session.id);
+    const releasedCreatedSessions = this.takeSuppressedCreatedSessionsFor(pending.cwd, pending.machineId, session.id);
     if (pending.discarded) {
       clearDraft(machineSessionKey(pending.machineId, tempId));
       this.setState({ clientQueuedSessionMessages: omitKey(this.getState().clientQueuedSessionMessages, tempId) });
+      this.applyReleasedCreatedSessions(releasedCreatedSessions, pending.machineId);
       void this.api.stop(session, pending.machineId).catch(() => {
         // Best-effort cleanup for a backend session whose temporary UI row was discarded before creation finished.
       });
@@ -859,6 +860,7 @@ export class SessionController {
       ...(wasSelected ? { selectedSession: cachedSession, status: state.sessionStatuses[cachedSession.id], activity: state.sessionActivities[cachedSession.id] } : {}),
       error: "",
     });
+    this.applyReleasedCreatedSessions(releasedCreatedSessions, pending.machineId);
     if (wasSelected) {
       this.updateUrl({ replace: true });
       await this.selectSession(cachedSession, { updateUrl: false });
@@ -870,8 +872,12 @@ export class SessionController {
     const pending = this.pendingSessionStarts.get(tempId);
     if (pending === undefined) return;
     this.pendingSessionStarts.delete(tempId);
-    this.clearSuppressedCreatedSessionsFor(pending.cwd, pending.machineId);
-    if (pending.discarded || !this.isCurrentPendingStart(pending)) return;
+    const releasedCreatedSessions = this.takeSuppressedCreatedSessionsFor(pending.cwd, pending.machineId);
+    const isCurrentPendingStart = this.isCurrentPendingStart(pending);
+    if (pending.discarded || !isCurrentPendingStart) {
+      if (isCurrentPendingStart) this.applyReleasedCreatedSessions(releasedCreatedSessions, pending.machineId);
+      return;
+    }
     const state = this.getState();
     const message = errorMessage(error);
     const activity = failedPendingSessionActivity(tempId, message, pending.queuedSends.length);
@@ -882,6 +888,7 @@ export class SessionController {
       activity: state.selectedSession?.id === tempId ? activity : state.activity,
       error: `Failed to start session: ${message}`,
     });
+    this.applyReleasedCreatedSessions(releasedCreatedSessions, pending.machineId);
   }
 
   private isCurrentPendingStart(pending: PendingSessionStart): boolean {
@@ -895,15 +902,29 @@ export class SessionController {
 
   private isSuppressedCreatedSession(session: SessionInfo, machineId: string): boolean {
     const suppressed = this.suppressedCreatedSessions.get(session.id);
-    return suppressed?.cwd === session.cwd && suppressed.machineId === machineId;
+    return suppressed?.session.cwd === session.cwd && suppressed.machineId === machineId;
   }
 
-  private clearSuppressedCreatedSessionsFor(cwd: string, machineId: string, resolvedSessionId?: string): void {
+  private takeSuppressedCreatedSessionsFor(cwd: string, machineId: string, resolvedSessionId?: string): SessionInfo[] {
     if (resolvedSessionId !== undefined) this.suppressedCreatedSessions.delete(resolvedSessionId);
-    if (this.hasPendingStartFor(cwd, machineId)) return;
+    if (this.hasPendingStartFor(cwd, machineId)) return [];
+    const released: SessionInfo[] = [];
     for (const [sessionId, suppressed] of this.suppressedCreatedSessions) {
-      if (suppressed.cwd === cwd && suppressed.machineId === machineId) this.suppressedCreatedSessions.delete(sessionId);
+      if (suppressed.session.cwd !== cwd || suppressed.machineId !== machineId) continue;
+      this.suppressedCreatedSessions.delete(sessionId);
+      released.push(suppressed.session);
     }
+    return released;
+  }
+
+  private applyReleasedCreatedSessions(sessions: readonly SessionInfo[], machineId: string): void {
+    if (sessions.length === 0 || selectedMachineId(this.getState()) !== machineId) return;
+    const state = this.getState();
+    if (state.selectedWorkspace === undefined) return;
+    const existingIds = new Set(state.sessions.map((session) => session.id));
+    const released = sessions.filter((session) => session.cwd === state.selectedWorkspace?.path && !existingIds.has(session.id));
+    if (released.length === 0) return;
+    this.setState({ sessions: [...released.reverse(), ...state.sessions] });
   }
 
   private mergePendingStartSessions(cwd: string, sessions: SessionInfo[], machineId: string): SessionInfo[] {
@@ -960,7 +981,7 @@ export class SessionController {
     if (state.sessions.some((candidate) => candidate.id === session.id)) return;
     const machineId = selectedMachineId(state);
     if (this.hasPendingStartFor(session.cwd, machineId)) {
-      this.suppressedCreatedSessions.set(session.id, { cwd: session.cwd, machineId });
+      this.suppressedCreatedSessions.set(session.id, { session, machineId });
       return;
     }
     this.setState({ sessions: [session, ...state.sessions] });
