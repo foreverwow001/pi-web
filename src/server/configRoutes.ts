@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { effectivePiWebConfig, loadPiWebConfig, savePiWebConfig, type LoadOptions, type PiWebConfig } from "../config.js";
+import { effectivePiWebConfig, loadPiWebConfig, parseUploadsConfig, savePiWebConfig, type LoadOptions, type PiWebConfig } from "../config.js";
 import type { PiWebConfigEnvOverrides, PiWebConfigResponse, PiWebConfigValues } from "../shared/apiTypes.js";
 import { isPiWebPluginId } from "../shared/pluginIds.js";
 
@@ -59,6 +59,7 @@ function parseConfigRequest(value: unknown): PiWebConfig {
   const shortcuts = value["shortcuts"];
   const plugins = value["plugins"];
   const pathAccess = value["pathAccess"];
+  const uploads = value["uploads"];
   const maxUploadBytes = value["maxUploadBytes"];
   const spawnSessions = value["spawnSessions"];
   const subsessions = value["subsessions"];
@@ -74,6 +75,7 @@ function parseConfigRequest(value: unknown): PiWebConfig {
   if (shortcuts !== undefined) config.shortcuts = parseShortcutsRequest(shortcuts);
   if (plugins !== undefined) config.plugins = parsePluginsRequest(plugins);
   if (pathAccess !== undefined) config.pathAccess = parsePathAccessRequest(pathAccess);
+  if (uploads !== undefined) config.uploads = parseUploadsConfig(uploads, "request");
   if (maxUploadBytes !== undefined) config.maxUploadBytes = parseMaxUploadBytesRequest(maxUploadBytes);
   if (spawnSessions !== undefined) {
     if (typeof spawnSessions !== "boolean") throw new Error("PI WEB config spawnSessions must be a boolean");

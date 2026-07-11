@@ -9,7 +9,7 @@ export class FormattedText extends LitElement {
   @property() text = "";
 
   override render() {
-    return html`<div class="formatted" @click=${this.onFormattedClick}>${unsafeHTML(toSafeMarkdownHtml(this.text))}</div>`;
+    return html`<div class="formatted" dir="auto" @click=${this.onFormattedClick}>${unsafeHTML(toSafeMarkdownHtml(this.text))}</div>`;
   }
 
   override updated(): void {

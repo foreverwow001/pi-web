@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { loadEffectiveProjectPathAccess, loadProjectPiWebConfig, mergePathAccessConfigs, PROJECT_PI_WEB_CONFIG_PATH } from "./projectPiWebConfig.js";
+import { loadEffectiveProjectPathAccess, loadEffectiveProjectUploadsConfig, loadProjectPiWebConfig, mergePathAccessConfigs, PROJECT_PI_WEB_CONFIG_PATH } from "./projectPiWebConfig.js";
 
 let tempDir: string;
 let projectPath: string;
@@ -26,13 +26,13 @@ describe("project PI WEB config", () => {
     });
   });
 
-  it("loads project-local path access config", async () => {
-    await writeProjectConfig({ version: 1, pathAccess: { allowedPaths: ["/tmp", "~/SDKs"] } });
+  it("loads project-local path access and upload config", async () => {
+    await writeProjectConfig({ version: 1, pathAccess: { allowedPaths: ["/tmp", "~/SDKs"] }, uploads: { defaultFolder: "manual\\incoming" } });
 
     await expect(loadProjectPiWebConfig(projectPath)).resolves.toEqual({
       path: join(projectPath, PROJECT_PI_WEB_CONFIG_PATH),
       exists: true,
-      config: { version: 1, pathAccess: { allowedPaths: ["/tmp", "~/SDKs"] } },
+      config: { version: 1, pathAccess: { allowedPaths: ["/tmp", "~/SDKs"] }, uploads: { defaultFolder: "manual/incoming" } },
     });
   });
 
@@ -48,11 +48,25 @@ describe("project PI WEB config", () => {
     await expect(loadProjectPiWebConfig(projectPath)).rejects.toThrow("PI WEB config pathAccess.allowedPaths must be an array of non-empty strings");
   });
 
+  it("reuses PI WEB upload schema validation", async () => {
+    await writeProjectConfig({ version: 1, uploads: { defaultFolder: "../outside" } });
+
+    await expect(loadProjectPiWebConfig(projectPath)).rejects.toThrow("PI WEB config uploads.defaultFolder must not contain path traversal");
+  });
+
   it("merges global and project path access in order", async () => {
     await writeProjectConfig({ version: 1, pathAccess: { allowedPaths: ["/project-sdk", "/shared"] } });
 
     await expect(loadEffectiveProjectPathAccess(projectPath, { pathAccess: { allowedPaths: ["/global-sdk", "/shared"] } })).resolves.toEqual({
       allowedPaths: ["/global-sdk", "/shared", "/project-sdk"],
+    });
+  });
+
+  it("lets project upload defaults override global upload defaults", async () => {
+    await writeProjectConfig({ version: 1, uploads: { defaultFolder: "project-uploads" } });
+
+    await expect(loadEffectiveProjectUploadsConfig(projectPath, { uploads: { defaultFolder: "global-uploads" } })).resolves.toEqual({
+      defaultFolder: "project-uploads",
     });
   });
 });

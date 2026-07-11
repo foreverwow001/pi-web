@@ -1,5 +1,30 @@
 # @jmfederico/pi-web
 
+## 1.202606.7
+
+### Patch Changes
+
+- b17faeb: Improve chat, prompt, and session text rendering for RTL and mixed-direction content.
+- 7e812aa: Allow chat composer attachments to save and mention general files while preserving native inline image delivery for supported image-only batches.
+- 47c9b66: Fix `pi-web doctor` "can find npm/pi" checks on fish. The `--version` check
+  wrapped the version command in a POSIX subshell `(cmd --version 2>&1 || true)`,
+  which fish parses as a command substitution in command position and rejects
+  (`command substitutions not allowed in command position`), producing a false
+  negative. Emit fish's `begin; ...; end` grouping when the service shell is fish.
+- b14205e: Highlight within-line changes in the Git diff viewer.
+- cb13af4: Add a manual sessions cleanup flow that previews and confirms archiving idle sessions and deleting old archived sessions, with per-project selection and capability guidance for unsupported machines. Actions can now expose disabled reasons so unavailable remote-machine actions stay visible with an explanation.
+- e46d9ec: Add manual Files panel uploads with direct drag/drop, an options flow from the Upload button, safe non-overwrite defaults, visible per-file progress/error reporting with clear failed/cancelled terminal states, and project-local default destinations.
+- 32ea809: Add a Keyboard shortcuts setting for choosing whether Enter sends chat messages or inserts new lines in this browser, with Shift+Enter performing the opposite action when supported, while preserving the desktop-vs-mobile default (desktop Enter sends; mobile/coarse/narrow Enter inserts a new line).
+- a99696b: Persist tracked subsession links in session history so parents can list, check, and read child sessions after the session daemon restarts, and reopened children can resume parent notifications.
+- 27a3b2b: Add workspace file mutation (`files.writeFile`, `files.deleteFile`, `files.moveFile`) and prompt editor (`prompt.insertText`, `prompt.getText`, `prompt.getSelection`) APIs to the plugin system. File mutations work for local and federated machines, enforce workspace path safety, and auto-refresh the File Explorer.
+- 9980027: Expose the plugin prompt editor helper in workspace panel contexts so panel interactions can insert text into the current prompt.
+
+## 1.202606.6
+
+### Patch Changes
+
+- c479a0d: Fix the session daemon startup when PI WEB runs with compatible Pi packages that moved legacy provider registry exports to the Pi AI compatibility entrypoint.
+
 ## 1.202606.5
 
 ### Patch Changes

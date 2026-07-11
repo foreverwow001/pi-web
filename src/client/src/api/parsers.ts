@@ -1,4 +1,4 @@
-import type { ArchiveSessionsResponse, AuthProviderOption, AuthProviderStatus, AuthProvidersResponse, AuthStatusSource, AuthType, CommandOption, CommandResult, FileContentResponse, FileSuggestion, FileTreeEntry, FileTreeResponse, GitDiffResponse, GitFileState, GitStatusFile, GitStatusResponse, IvyhouseFooterControlsResponse, IvyhouseFastOverride, IvyhouseFooterMode, Machine, MachineHealth, MachineKind, MachineRuntime, MachineStatus, MessagePage, ModelSelectionResponse, OAuthFlowState, PiWebCapability, PiWebComponentStatus, PiWebConfigEnvOverrides, PiWebConfigResponse, PiWebConfigValues, PiWebInstallationInfo, PiWebPluginConfigMap, PiWebPluginInfo, PiWebPluginsResponse, PiWebPluginScope, PiWebReleaseStatus, PiWebRuntimeComponent, PiWebRuntimeResponse, PiWebServiceComponent, PiWebShortcutConfig, PiWebStatusMessage, PiWebStatusResponse, PiWebStatusSeverity, Project, QueuedSessionMessage, SavedPromptAttachment, SessionExtensionStatus, SessionInfo, SessionModel, SessionStatus, SlashCommand, TerminalCommandRun, TerminalCommandRunStatus, TerminalInfo, ThinkingLevelsResponse, Workspace, WorkspaceActivity, WorkspaceActivityResponse } from "../../../shared/apiTypes";
+import type { ArchiveSessionsResponse, AuthProviderOption, AuthProviderStatus, AuthProvidersResponse, AuthStatusSource, AuthType, CommandOption, CommandResult, DeleteWorkspaceFileResponse, FileContentResponse, FileSuggestion, FileTreeEntry, FileTreeResponse, GitDiffResponse, GitFileState, GitStatusFile, GitStatusResponse, IvyhouseFooterControlsResponse, IvyhouseFastOverride, IvyhouseFooterMode, Machine, MachineHealth, MachineKind, MachineRuntime, MachineStatus, MessagePage, ModelSelectionResponse, MoveWorkspaceFileResponse, OAuthFlowState, PiWebCapability, PiWebComponentStatus, PiWebConfigEnvOverrides, PiWebConfigResponse, PiWebConfigValues, PiWebInstallationInfo, PiWebPluginConfigMap, PiWebPluginInfo, PiWebPluginsResponse, PiWebPluginScope, PiWebReleaseStatus, PiWebRuntimeComponent, PiWebRuntimeResponse, PiWebServiceComponent, PiWebShortcutConfig, PiWebStatusMessage, PiWebStatusResponse, PiWebStatusSeverity, Project, QueuedSessionMessage, SavedPromptAttachment, SessionCleanupExecuteResponse, SessionCleanupPreviewResponse, SessionCleanupProjectSummary, SessionCleanupThresholds, SessionCleanupTotals, SessionExtensionStatus, SessionInfo, SessionModel, SessionStatus, SlashCommand, TerminalCommandRun, TerminalCommandRunStatus, TerminalInfo, ThinkingLevelsResponse, WriteWorkspaceFileResponse, Workspace, WorkspaceActivity, WorkspaceActivityResponse } from "../../../shared/apiTypes";
 import { isPiWebCapability } from "../../../shared/capabilities";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -164,6 +164,15 @@ export function parseWorkspace(value: unknown): Workspace {
     isMain: requireBoolean(record, "isMain"),
     isGitRepo: requireBoolean(record, "isGitRepo"),
     isGitWorktree: requireBoolean(record, "isGitWorktree"),
+    ...optionalField("effectiveConfig", optionalWorkspaceEffectiveConfig(record["effectiveConfig"])),
+  };
+}
+
+function optionalWorkspaceEffectiveConfig(value: unknown): Workspace["effectiveConfig"] | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value) || Array.isArray(value)) throw new Error("Invalid workspace effectiveConfig field");
+  return {
+    ...optionalField("uploads", optionalUploads(value["uploads"])),
   };
 }
 
@@ -214,6 +223,52 @@ function optionalExtensionStatuses(value: unknown): Pick<SessionStatus, "extensi
 function parseSessionExtensionStatus(value: unknown): SessionExtensionStatus {
   const record = requireRecord(value);
   return { key: requireString(record, "key"), label: requireString(record, "label") };
+}
+
+export function parseSessionCleanupPreviewResponse(value: unknown): SessionCleanupPreviewResponse {
+  const record = requireRecord(value);
+  const skippedBusySessionIds = record["skippedBusySessionIds"] === undefined ? undefined : arrayOfString(record["skippedBusySessionIds"], "skippedBusySessionIds");
+  return {
+    generatedAt: requireString(record, "generatedAt"),
+    thresholds: parseSessionCleanupThresholds(record["thresholds"]),
+    projects: arrayOf(parseSessionCleanupProjectSummary)(record["projects"]),
+    totals: parseSessionCleanupTotals(record["totals"]),
+    ...(skippedBusySessionIds === undefined ? {} : { skippedBusySessionIds }),
+  };
+}
+
+export function parseSessionCleanupExecuteResponse(value: unknown): SessionCleanupExecuteResponse {
+  const record = requireRecord(value);
+  return {
+    ...parseSessionCleanupPreviewResponse(record),
+    archivedSessionIds: arrayOfString(record["archivedSessionIds"], "archivedSessionIds"),
+    deletedSessionIds: arrayOfString(record["deletedSessionIds"], "deletedSessionIds"),
+  };
+}
+
+function parseSessionCleanupThresholds(value: unknown): SessionCleanupThresholds {
+  const record = requireRecord(value);
+  return {
+    ...optionalField("archiveIdleDays", optionalNumber(record, "archiveIdleDays")),
+    ...optionalField("deleteArchivedDays", optionalNumber(record, "deleteArchivedDays")),
+  };
+}
+
+function parseSessionCleanupProjectSummary(value: unknown): SessionCleanupProjectSummary {
+  const record = requireRecord(value);
+  return {
+    cwd: requireString(record, "cwd"),
+    archiveCount: requireNumber(record, "archiveCount"),
+    deleteCount: requireNumber(record, "deleteCount"),
+  };
+}
+
+function parseSessionCleanupTotals(value: unknown): SessionCleanupTotals {
+  const record = requireRecord(value);
+  return {
+    archiveCount: requireNumber(record, "archiveCount"),
+    deleteCount: requireNumber(record, "deleteCount"),
+  };
 }
 
 function parseQueuedSessionMessage(value: unknown): QueuedSessionMessage {
@@ -370,6 +425,34 @@ export function parseFileContentResponse(value: unknown): FileContentResponse {
   return { path: requireString(record, "path"), ...optionalField("language", optionalString(record, "language")), ...optionalField("mediaType", optionalFileMediaType(record["mediaType"])), ...optionalField("mimeType", optionalString(record, "mimeType")), encoding, size: requireNumber(record, "size"), modifiedAt: requireString(record, "modifiedAt"), content: requireString(record, "content"), truncated: requireBoolean(record, "truncated"), binary: requireBoolean(record, "binary") };
 }
 
+export function parseWriteWorkspaceFileResponse(value: unknown): WriteWorkspaceFileResponse {
+  const record = requireRecord(value);
+  return {
+    path: requireString(record, "path"),
+    size: requireNumber(record, "size"),
+    modifiedAt: requireString(record, "modifiedAt"),
+    created: requireBoolean(record, "created"),
+  };
+}
+
+export function parseDeleteWorkspaceFileResponse(value: unknown): DeleteWorkspaceFileResponse {
+  const record = requireRecord(value);
+  return {
+    path: requireString(record, "path"),
+    existed: requireBoolean(record, "existed"),
+  };
+}
+
+export function parseMoveWorkspaceFileResponse(value: unknown): MoveWorkspaceFileResponse {
+  const record = requireRecord(value);
+  return {
+    fromPath: requireString(record, "fromPath"),
+    toPath: requireString(record, "toPath"),
+    size: requireNumber(record, "size"),
+    modifiedAt: requireString(record, "modifiedAt"),
+  };
+}
+
 function optionalFileMediaType(value: unknown): FileContentResponse["mediaType"] | undefined {
   if (value === undefined) return undefined;
   if (value !== "image") throw new Error("Invalid file media type");
@@ -480,6 +563,7 @@ function parsePiWebConfigValues(value: unknown): PiWebConfigValues {
     ...optionalField("shortcuts", optionalShortcuts(record["shortcuts"])),
     ...optionalField("plugins", optionalPlugins(record["plugins"])),
     ...optionalField("pathAccess", optionalPathAccess(record["pathAccess"])),
+    ...optionalField("uploads", optionalUploads(record["uploads"])),
     ...optionalField("maxUploadBytes", optionalNumber(record, "maxUploadBytes")),
     ...optionalField("spawnSessions", optionalBoolean(record, "spawnSessions")),
     ...optionalField("subsessions", optionalBoolean(record, "subsessions")),
@@ -506,6 +590,14 @@ function optionalStringArray(value: unknown, field: string): string[] | undefine
   if (value === undefined) return undefined;
   if (isNonEmptyStringArray(value)) return value;
   throw new Error(`Invalid PI WEB ${field} field`);
+}
+
+function optionalUploads(value: unknown): PiWebConfigValues["uploads"] | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value) || Array.isArray(value)) throw new Error("Invalid PI WEB uploads field");
+  return {
+    ...optionalField("defaultFolder", optionalString(value, "defaultFolder")),
+  };
 }
 
 function isStringArray(value: unknown): value is string[] {

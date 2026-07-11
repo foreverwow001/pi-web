@@ -9,6 +9,7 @@ import { ProjectService } from "./projects/projectService.js";
 import { WorkspaceService } from "./workspaces/workspaceService.js";
 import { isAbsoluteishFileSuggestionQuery, listFileSuggestions, listPathSuggestions } from "./workspaces/fileSuggestions.js";
 import { pathAccessForCwd } from "./workspaces/effectivePathAccess.js";
+import { loadEffectiveProjectUploadsConfig } from "./workspaces/projectPiWebConfig.js";
 import { normalizeRequestCwd } from "./workingDirectory.js";
 import { listDirectorySuggestions } from "./projects/directorySuggestions.js";
 import { SessionDaemonClient } from "../sessiond/sessionDaemonClient.js";
@@ -26,6 +27,7 @@ import { registerMachineRoutes } from "./machines/machineRoutes.js";
 import { registerMachineProxyRoutes } from "./machines/machineProxyRoutes.js";
 import { proxyMachinePluginAsset, registerMachinePluginProxyRoutes } from "./machines/machinePluginProxyRoutes.js";
 import { registerIvyhouseStatusPanelRoutes } from "./ivyhouseStatusPanel.js";
+import type { Project, Workspace } from "./types.js";
 
 export const PI_WEB_REQUEST_BODY_LIMIT_BYTES = 20 * 1024 * 1024;
 
@@ -42,7 +44,11 @@ export interface AppDependencies {
   bodyLimit?: number;
 }
 
-function registerLocalProjectRoutes(app: FastifyInstance, projects: ProjectService, workspaces: WorkspaceService, prefix: string): void {
+interface LocalProjectRouteOptions {
+  config?: Pick<PiWebConfigService, "read">;
+}
+
+function registerLocalProjectRoutes(app: FastifyInstance, projects: ProjectService, workspaces: WorkspaceService, prefix: string, options: LocalProjectRouteOptions = {}): void {
   app.get(`${prefix}/projects`, async () => projects.list());
 
   app.post<{ Body: { name?: string; path: string; create?: boolean } }>(`${prefix}/projects`, async (request, reply) => {
@@ -73,11 +79,24 @@ function registerLocalProjectRoutes(app: FastifyInstance, projects: ProjectServi
   app.get<{ Params: { projectId: string } }>(`${prefix}/projects/:projectId/workspaces`, async (request, reply) => {
     try {
       const project = await projects.requireProject(request.params.projectId);
-      return await workspaces.list(project);
+      return await listWorkspacesWithEffectiveConfig(project, workspaces, options.config);
     } catch (error) {
       return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
     }
   });
+}
+
+async function listWorkspacesWithEffectiveConfig(project: Project, workspaces: WorkspaceService, config?: Pick<PiWebConfigService, "read">): Promise<Workspace[]> {
+  const [workspaceList, effectiveConfig] = await Promise.all([
+    workspaces.list(project),
+    workspaceEffectiveConfig(project.path, config),
+  ]);
+  return workspaceList.map((workspace) => ({ ...workspace, effectiveConfig }));
+}
+
+async function workspaceEffectiveConfig(projectPath: string, config?: Pick<PiWebConfigService, "read">): Promise<NonNullable<Workspace["effectiveConfig"]>> {
+  const globalConfig = config === undefined ? {} : (await config.read()).effectiveConfig;
+  return { uploads: await loadEffectiveProjectUploadsConfig(projectPath, globalConfig) };
 }
 
 interface LocalFileSuggestionRouteOptions {
@@ -135,8 +154,8 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
   registerMachineRoutes(app, machines);
   registerMachinePluginProxyRoutes(app, machines);
 
-  registerLocalProjectRoutes(app, projects, workspaces, "/api");
-  registerLocalProjectRoutes(app, projects, workspaces, "/api/machines/local");
+  registerLocalProjectRoutes(app, projects, workspaces, "/api", { config: configService });
+  registerLocalProjectRoutes(app, projects, workspaces, "/api/machines/local", { config: configService });
 
   registerSessionProxyRoutes(app, sessionDaemon);
   registerSessionProxyRoutes(app, sessionDaemon, "/api/machines/local");

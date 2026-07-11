@@ -1,8 +1,7 @@
 import { html, type TemplateResult } from "lit";
-import type { FileContentResponse, FileTreeEntry, GitDiffResponse, GitStatusResponse } from "../../api";
-import { workspaceImagePreviewUrl } from "../../api/urls";
-import { MAX_IMAGE_PREVIEW_BYTES, MAX_IMAGE_PREVIEW_LABEL } from "../../../../shared/workspaceFiles";
+import type { GitDiffResponse, GitStatusResponse } from "../../api";
 import { renderBuiltinTabIcon } from "../../components/tabIcons";
+import "../../components/WorkspaceFilesPanel";
 import type { WorkspacePanelContribution, WorkspacePanelContext } from "../types";
 
 export function createCoreWorkspacePanels(): WorkspacePanelContribution[] {
@@ -34,69 +33,7 @@ export function createCoreWorkspacePanels(): WorkspacePanelContribution[] {
 }
 
 function renderFiles(context: WorkspacePanelContext): TemplateResult {
-  return html`
-    <section class="toolbar">
-      <strong>Files</strong>
-      ${context.fileTreeStale ? html`<span class="stale">stale</span>` : null}
-      <button @click=${context.onRefreshFiles}>Refresh</button>
-    </section>
-    <section class="split">
-      <div class="list tree">
-        ${context.fileTree.length === 0 ? html`<p class="muted">No files loaded.</p>` : context.fileTree.map((entry) => renderTreeEntry(context, entry, 0))}
-      </div>
-      <div class="viewer">
-        ${renderFileViewer(context)}
-      </div>
-    </section>
-  `;
-}
-
-function renderTreeEntry(context: WorkspacePanelContext, entry: FileTreeEntry, depth: number): TemplateResult {
-  const children = context.expandedDirs[entry.path];
-  const hasChildren = children !== undefined;
-  const selected = entry.type !== "directory" && context.selectedFilePath === entry.path;
-  return html`
-    <button class=${selected ? "row selected" : "row"} style=${`--depth:${String(depth)}`} @click=${() => { selectTreeEntry(context, entry); }}>
-      <span>${entry.type === "directory" ? (hasChildren ? "▾" : "▸") : "·"}</span>
-      <span>${entry.name}</span>
-    </button>
-    ${hasChildren ? children.map((child) => renderTreeEntry(context, child, depth + 1)) : null}
-  `;
-}
-
-function selectTreeEntry(context: WorkspacePanelContext, entry: FileTreeEntry): void {
-  if (entry.type === "directory") context.onExpandDir(entry.path);
-  else context.onSelectFile(entry.path);
-}
-
-function renderFileViewer(context: WorkspacePanelContext): TemplateResult {
-  const file = context.selectedFileContent;
-  if (context.selectedFilePath === undefined || context.selectedFilePath === "") return html`<p class="muted">Select a file.</p>`;
-  if (file === undefined) return html`<p class="muted">Loading ${context.selectedFilePath}…</p>`;
-  if (file.mediaType === "image") return renderImageViewer(context, file);
-  if (file.binary) return html`<p class="muted">Binary file: ${file.path} · ${formatFileSize(file.size)}</p>`;
-  loadCodeViewer();
-  return html`
-    <div class="viewer-header"><strong>${file.path}</strong><small>${file.language ?? "text"}${file.truncated ? " · truncated" : ""}</small></div>
-    <code-viewer .content=${file.content} .language=${file.language}></code-viewer>
-  `;
-}
-
-function renderImageViewer(context: WorkspacePanelContext, file: FileContentResponse): TemplateResult {
-  const metadata = `${file.mimeType ?? "image"} · ${formatFileSize(file.size)}`;
-  if (file.size > MAX_IMAGE_PREVIEW_BYTES) {
-    return html`
-      <div class="viewer-header"><strong>${file.path}</strong><small>${metadata}</small></div>
-      <p class="muted">Image too large to preview: ${formatFileSize(file.size)} · limit ${MAX_IMAGE_PREVIEW_LABEL}</p>
-    `;
-  }
-  const src = workspaceImagePreviewUrl(context.workspace.projectId, context.workspace.id, file.path, { modifiedAt: file.modifiedAt, machineId: context.machine.id });
-  return html`
-    <div class="viewer-header"><strong>${file.path}</strong><small>${metadata}</small></div>
-    <div class="image-preview">
-      <img src=${src} alt=${file.path} decoding="async" />
-    </div>
-  `;
+  return html`<workspace-files-panel .context=${context}></workspace-files-panel>`;
 }
 
 function renderTerminal(context: WorkspacePanelContext): TemplateResult {
@@ -146,17 +83,17 @@ function renderDiffViewer(context: WorkspacePanelContext): TemplateResult {
 }
 
 function renderDiffSection(diff: GitDiffResponse): TemplateResult {
-  loadCodeViewer();
+  loadUnifiedDiffViewer();
   return html`
     <section class="diff-section">
       <div class="viewer-header"><strong>${diff.path ?? "diff"}</strong><small>${diff.staged ? "staged" : "unstaged"}${diff.truncated ? " · truncated" : ""}</small></div>
-      <code-viewer .content=${diff.diff} .language=${"diff"}></code-viewer>
+      <unified-diff-viewer .diff=${diff.diff}></unified-diff-viewer>
     </section>
   `;
 }
 
-function loadCodeViewer(): void {
-  void import("../../components/CodeViewer");
+function loadUnifiedDiffViewer(): void {
+  void import("../../components/UnifiedDiffViewer");
 }
 
 function loadTerminalPanel(): void {
@@ -173,18 +110,4 @@ function gitSummary(status: GitStatusResponse): string {
 function stateLabel(index: string, workingTree: string): string {
   const label = workingTree !== "unmodified" ? workingTree : index;
   return label.slice(0, 1).toUpperCase();
-}
-
-function formatFileSize(size: number): string {
-  if (!Number.isFinite(size) || size < 0) return "0 B";
-  if (size < 1024) return `${String(size)} B`;
-  const kib = size / 1024;
-  if (kib < 1024) return `${formatScaledFileSize(kib)} KB`;
-  const mib = kib / 1024;
-  if (mib < 1024) return `${formatScaledFileSize(mib)} MB`;
-  return `${formatScaledFileSize(mib / 1024)} GB`;
-}
-
-function formatScaledFileSize(value: number): string {
-  return value >= 10 ? String(Math.round(value)) : value.toFixed(1);
 }

@@ -1,6 +1,6 @@
 # PI WEB configuration reference
 
-PI WEB configuration covers the machine-local and project-local settings you usually need: the web/API bind address, trusted development-host settings, UI preferences, plugin enablement, file-explorer path access, upload limits, and session-daemon tools.
+PI WEB configuration covers the machine-local and project-local settings you usually need: the web/API bind address, trusted development-host settings, UI preferences, plugin enablement, file-explorer path access, manual upload defaults, upload limits, and session-daemon tools.
 
 This file is the markdown reference for agents and package consumers. The website page is <https://pi-web.dev/config>.
 
@@ -17,11 +17,13 @@ If you installed services with a custom config path, rerun `pi-web install --con
 
 ## Precedence and reloads
 
-Runtime values are resolved as:
+Machine-global runtime values are resolved as:
 
 ```text
-defaults → config file → environment overrides
+defaults → global config file → environment overrides
 ```
+
+Supported project-local settings are then applied for that project's workspaces. For upload defaults, `<project>/.pi-web/config.json` overrides the global value.
 
 Environment overrides include `PI_WEB_HOST`, `PI_WEB_PORT` / `PORT`, `PI_WEB_ALLOWED_HOSTS`, `PI_WEB_MAX_UPLOAD_BYTES`, `PI_WEB_SPAWN_SESSIONS`, and `PI_WEB_SUBSESSIONS`.
 
@@ -31,6 +33,7 @@ Process restarts depend on the key:
 - `maxUploadBytes`: restart both the web/API process and the session daemon.
 - `spawnSessions` / `subsessions`: restart the session daemon.
 - `pathAccess`: applies on the next request; existing file views may need a browser refresh.
+- `uploads.defaultFolder`: applies to newly opened Files upload dialogs and new direct drag/drop batches after config/workspace refresh.
 - `plugins`: reload the browser tab after changing plugin enablement.
 - `shortcuts`: saved settings apply in the browser after config refresh/save.
 
@@ -42,6 +45,9 @@ Process restarts depend on the key:
   "port": 8504,
   "pathAccess": {
     "allowedPaths": ["~/SDKs", "/opt/reference"]
+  },
+  "uploads": {
+    "defaultFolder": ".pi-web/uploads"
   },
   "maxUploadBytes": 67108864,
   "spawnSessions": true,
@@ -67,11 +73,16 @@ Project-local config lives at `<project>/.pi-web/config.json`. Use it for settin
   "version": 1,
   "pathAccess": {
     "allowedPaths": ["~/SDKs", "/opt/reference"]
+  },
+  "uploads": {
+    "defaultFolder": "manual/uploads"
   }
 }
 ```
 
 Project-local `pathAccess.allowedPaths` entries are merged after the global list and deduplicated. Paths must still be host-absolute or `~`-prefixed; relative roots are not supported.
+
+Project-local `uploads.defaultFolder` overrides the global upload destination for workspaces in that project. Current PI WEB servers include this workspace-effective value on the existing workspace responses used locally and through machine federation. Older remote servers may omit the optional field; the browser falls back to the global/default upload folder.
 
 Plugins may own separate project files, such as `.pi-web/tasks.json` for the built-in Workspace Tasks plugin.
 
@@ -86,6 +97,7 @@ Rows with JSON key `—` are runtime-only environment variables, not config-file
 | Web/API port | `port` | `PI_WEB_PORT`, `PORT` | Global | Not supported locally | Restart web/API |
 | Dev-server allowed hosts | `allowedHosts` | `PI_WEB_ALLOWED_HOSTS` | Global | Not supported locally | Restart dev web/UI |
 | External filesystem roots | `pathAccess.allowedPaths` | — | Global + project | **Merges**: global roots first, then project roots; duplicates removed | Next file request; refresh existing views if needed |
+| Manual file upload default folder | `uploads.defaultFolder` | — | Global + project | **Overrides**: project value wins for workspaces in that project; otherwise global/default applies | New Upload dialogs and direct drag/drop batches after config/workspace refresh |
 | Upload/body limit | `maxUploadBytes` | `PI_WEB_MAX_UPLOAD_BYTES` | Global | Not supported locally | Restart web/API and session daemon |
 | Agent can spawn sessions | `spawnSessions` | `PI_WEB_SPAWN_SESSIONS` | Global/session daemon | Not supported locally | Restart session daemon |
 | Tracked subsessions (beta) | `subsessions` | `PI_WEB_SUBSESSIONS` | Global/session daemon | Not supported locally; also requires `spawnSessions` | Restart session daemon |
@@ -122,6 +134,31 @@ Accepted root forms:
 When an absolute request is served, PI WEB expands `~`, canonicalizes the configured roots with `realpath`, requires roots to be existing directories, and rejects symlink escapes outside the allowed roots.
 
 This is not a sandbox for the underlying Pi Coding Agent or your OS user. It only controls PI WEB UI/API file exposure outside a workspace.
+
+### Manual upload defaults
+
+The Files panel can upload one or more files in two ways:
+
+- Drop files onto the Files panel to upload immediately to the workspace-effective default folder.
+- Use the toolbar **Upload** button to open the review dialog, edit the destination, and opt into upload options.
+
+`uploads.defaultFolder` sets the workspace-effective default destination. The built-in default is `.pi-web/uploads`; a global config value applies to every project unless `<project>/.pi-web/config.json` sets a project-local override.
+
+```json
+{
+  "uploads": {
+    "defaultFolder": "manual/uploads"
+  }
+}
+```
+
+The value must be a non-empty workspace-relative folder. PI WEB normalizes repeated separators and backslashes to `/`, and rejects absolute paths or `..` traversal. In the upload dialog only, clearing the destination field uploads that batch to the workspace root.
+
+Manual uploads use the workspace file-write path: paths stay workspace-relative, parent folder creation is enabled by default, and overwrite is disabled by default. Direct drag/drop always keeps `overwrite` off; the review dialog lets you explicitly enable overwrite when needed. Browser-owned XHR progress is shown per batch/file, conflicts and errors stay visible in the upload progress UI, and the final file-write response is the source of truth.
+
+For machine federation, current remote PI WEB servers return `workspace.effectiveConfig.uploads.defaultFolder` on the existing workspace-list response. Older remote servers can omit that optional field without breaking clients; the Files panel falls back to the global/default upload folder.
+
+The per-request size limit is still controlled by `maxUploadBytes` / `PI_WEB_MAX_UPLOAD_BYTES`.
 
 ### Session daemon tools
 

@@ -1,13 +1,14 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { parsePathAccessConfig, type PiWebConfig } from "../../config.js";
-import type { PiWebPathAccessConfig } from "../../shared/apiTypes.js";
+import { effectiveUploadsConfig, parsePathAccessConfig, parseUploadsConfig, type PiWebConfig } from "../../config.js";
+import type { PiWebPathAccessConfig, PiWebUploadsConfig } from "../../shared/apiTypes.js";
 
 export const PROJECT_PI_WEB_CONFIG_PATH = ".pi-web/config.json";
 
 export interface ProjectPiWebConfig {
   version?: 1;
   pathAccess?: PiWebPathAccessConfig;
+  uploads?: PiWebUploadsConfig;
 }
 
 export interface LoadedProjectPiWebConfig {
@@ -33,6 +34,11 @@ export async function loadEffectiveProjectPathAccess(projectPath: string, global
   return mergePathAccessConfigs(globalConfig.pathAccess, projectConfig.config.pathAccess);
 }
 
+export async function loadEffectiveProjectUploadsConfig(projectPath: string, globalConfig: PiWebConfig): Promise<PiWebUploadsConfig> {
+  const projectConfig = await loadProjectPiWebConfig(projectPath);
+  return effectiveUploadsConfig({ uploads: { ...(globalConfig.uploads ?? {}), ...(projectConfig.config.uploads ?? {}) } });
+}
+
 export function mergePathAccessConfigs(...configs: (PiWebPathAccessConfig | undefined)[]): PiWebPathAccessConfig | undefined {
   const allowedPaths = dedupe(configs.flatMap((config) => config?.allowedPaths ?? []));
   return allowedPaths.length === 0 ? undefined : { allowedPaths };
@@ -43,6 +49,7 @@ function parseProjectPiWebConfig(value: Record<string, unknown>, path: string): 
   return {
     ...(version !== undefined ? { version: parseProjectConfigVersion(version, path) } : {}),
     ...(value["pathAccess"] !== undefined ? { pathAccess: parsePathAccessConfig(value["pathAccess"], path) } : {}),
+    ...(value["uploads"] !== undefined ? { uploads: parseUploadsConfig(value["uploads"], path) } : {}),
   };
 }
 

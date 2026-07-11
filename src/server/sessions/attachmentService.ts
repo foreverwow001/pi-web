@@ -1,8 +1,8 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, realpath, writeFile } from "node:fs/promises";
+import { basename, extname, join } from "node:path";
 import type { PromptAttachment, SavedPromptAttachment } from "../../shared/apiTypes.js";
 import { extensionForImageMimeType } from "../../shared/promptAttachments.js";
-import { resolveParentInsideWorkspace } from "../workspaces/pathSafety.js";
+import { ensureInside, isNodeErrorWithCode, resolveParentInsideWorkspace } from "../workspaces/pathSafety.js";
 
 /**
  * Default workspace-relative folder used when saving pasted/dropped
@@ -11,34 +11,98 @@ import { resolveParentInsideWorkspace } from "../workspaces/pathSafety.js";
 export const DEFAULT_ATTACHMENT_FOLDER = ".pi-web/attachments";
 
 export interface SaveAttachmentsOptions {
+  /** Workspace-relative folder to write into. Defaults to `.pi-web/attachments`. */
   folder?: string;
+  /** Clock injection for deterministic tests. */
   now?: () => Date;
 }
 
+/**
+ * Write attachments into a workspace folder and return their relative paths.
+ * Filenames are collision-safe and stay inside the workspace root.
+ */
 export async function saveAttachmentsToWorkspace(
   cwd: string,
   attachments: PromptAttachment[],
   options: SaveAttachmentsOptions = {},
 ): Promise<SavedPromptAttachment[]> {
-  const folder = normalizeFolder(options.folder ?? DEFAULT_ATTACHMENT_FOLDER);
+  const folder = options.folder ?? DEFAULT_ATTACHMENT_FOLDER;
   const now = options.now ?? (() => new Date());
-  const { target: folderTarget } = await resolveParentInsideWorkspace(cwd, folder);
-  await mkdir(folderTarget, { recursive: true });
+  const { root, target: requestedFolderTarget, relativePath: normalizedFolder } = await resolveParentInsideWorkspace(cwd, folder);
+  await mkdir(requestedFolderTarget, { recursive: true });
+  const folderTarget = await realpath(requestedFolderTarget);
+  ensureInside(root, folderTarget);
 
   const stamp = timestamp(now());
   const saved: SavedPromptAttachment[] = [];
   for (const [index, attachment] of attachments.entries()) {
     const bytes = Buffer.from(attachment.data, "base64");
-    const filename = `attachment-${stamp}-${String(index + 1)}.${extensionForImageMimeType(attachment.mimeType)}`;
-    const relativePath = `${folder}/${filename}`;
-    await writeFile(join(folderTarget, filename), bytes);
+    const filename = await writeUniqueAttachmentFile(folderTarget, attachmentFilename(attachment, stamp, index), bytes);
+    const relativePath = normalizedFolder === "" ? filename : `${normalizedFolder}/${filename}`;
     saved.push({ path: relativePath, mimeType: attachment.mimeType, size: bytes.byteLength });
   }
   return saved;
 }
 
-function normalizeFolder(folder: string): string {
-  return folder.split(/[\\/]+/).filter((part) => part !== "" && part !== ".").join("/");
+async function writeUniqueAttachmentFile(folderTarget: string, filename: string, bytes: Buffer): Promise<string> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const candidate = attempt === 0 ? filename : addCollisionSuffix(filename, attempt + 1);
+    try {
+      await writeFile(join(folderTarget, candidate), bytes, { flag: "wx" });
+      return candidate;
+    } catch (error: unknown) {
+      if (!isNodeErrorWithCode(error, "EEXIST")) throw error;
+    }
+  }
+  throw new Error("Unable to choose a unique attachment filename");
+}
+
+function addCollisionSuffix(filename: string, suffix: number): string {
+  const extension = extname(filename);
+  const stem = filename.slice(0, filename.length - extension.length);
+  return `${stem}-${String(suffix)}${extension}`;
+}
+
+function attachmentFilename(attachment: PromptAttachment, stamp: string, index: number): string {
+  const originalName = sanitizeOriginalFilename(attachment.name) ?? fallbackAttachmentFilename(attachment);
+  return `attachment-${stamp}-${String(index + 1)}-${originalName}`;
+}
+
+function fallbackAttachmentFilename(attachment: PromptAttachment): string {
+  if (attachment.kind === "image") return `image.${extensionForImageMimeType(attachment.mimeType)}`;
+  return "file.bin";
+}
+
+const MAX_ORIGINAL_FILENAME_LENGTH = 96;
+
+function sanitizeOriginalFilename(name: string | undefined): string | undefined {
+  const trimmed = name?.trim();
+  if (trimmed === undefined || trimmed === "") return undefined;
+  const leaf = basename(trimmed.replace(/\\/g, "/"));
+  const sanitized = stripControlCharacters(leaf)
+    .normalize("NFKC")
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/-+\./g, ".")
+    .replace(/^\.+/, "")
+    .replace(/[.-]+$/, "");
+  if (sanitized === "") return undefined;
+  return truncateFilename(sanitized, MAX_ORIGINAL_FILENAME_LENGTH);
+}
+
+function stripControlCharacters(value: string): string {
+  return Array.from(value).filter((character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint !== undefined && codePoint > 0x1f && codePoint !== 0x7f;
+  }).join("");
+}
+
+function truncateFilename(filename: string, maxLength: number): string {
+  if (filename.length <= maxLength) return filename;
+  const extension = extname(filename);
+  if (extension.length >= maxLength) return filename.slice(0, maxLength);
+  const stem = filename.slice(0, filename.length - extension.length);
+  return `${stem.slice(0, maxLength - extension.length)}${extension}`;
 }
 
 function timestamp(date: Date): string {
