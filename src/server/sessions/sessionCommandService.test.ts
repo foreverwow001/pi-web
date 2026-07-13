@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { SessionUiEvent } from "../../shared/apiTypes.js";
 import { SessionCommandService, type CommandActiveSession, type CommandSession } from "./sessionCommandService.js";
 
@@ -67,42 +66,15 @@ describe("SessionCommandService", () => {
     await expect(service.run("s1", "/template arg")).resolves.toMatchObject({ type: "done" });
     await expect(service.run("s1", "/skill:skill-a arg")).resolves.toMatchObject({ type: "done" });
     expect(prompt).toHaveBeenCalledTimes(3);
+    expect(prompt).toHaveBeenNthCalledWith(1, "s1", "/ext arg");
+    expect(prompt).toHaveBeenNthCalledWith(2, "s1", "/template arg");
+    expect(prompt).toHaveBeenNthCalledWith(3, "s1", "/skill:skill-a arg");
   });
 
-  it("runs extension commands through the extension runner instead of forwarding them as prompts", async () => {
-    const handler = vi.fn(async () => {
-      await Promise.resolve();
-    });
-    // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-    const commandContext = { mode: "web" } as unknown as ExtensionCommandContext;
-    const createCommandContext = vi.fn(() => commandContext);
-    const active = activeSession({
-      extensionRunner: {
-        getRegisteredCommands: () => [{ invocationName: "ext" }],
-        getCommand: (name: string) => name === "ext" ? {
-          invocationName: "ext",
-          name: "ext",
-          sourceInfo: { path: "test", source: "test", scope: "temporary", origin: "top-level" },
-          handler,
-        } : undefined,
-        createCommandContext,
-      },
-    });
-    const prompt = vi.fn(promptAccepted);
-    const events = eventPublisher();
-    const service = new SessionCommandService(() => getActive(active), prompt, events);
-
-    await expect(service.run("s1", "/ext arg one")).resolves.toEqual({ type: "done", message: "Started /ext" });
-    await vi.waitFor(() => {
-      expect(handler).toHaveBeenCalledWith("arg one", commandContext);
-    });
-    expect(prompt).not.toHaveBeenCalled();
-    expect(events.publish).toHaveBeenCalledWith("s1", { type: "command.output", level: "success", message: "Command completed: /ext" });
-  });
-
-  it("renames sessions and returns updated client session metadata", async () => {
+  it("renames sessions, publishes the name update, and returns updated client session metadata", async () => {
     const active = activeSession();
-    const service = new SessionCommandService(() => getActive(active), vi.fn(), eventPublisher());
+    const events = eventPublisher();
+    const service = new SessionCommandService(() => getActive(active), vi.fn(), events);
 
     await expect(service.run("s1", "/name Useful name")).resolves.toMatchObject({
       type: "done",
@@ -110,6 +82,7 @@ describe("SessionCommandService", () => {
       session: { id: "s1", cwd: "/work", name: "Useful name", messageCount: 2 },
     });
     expect(active.runtime.session.setSessionName).toHaveBeenCalledWith("Useful name");
+    expect(events.publish).toHaveBeenCalledWith("s1", { type: "session.name", sessionId: "s1", name: "Useful name" });
   });
 
   it("formats session stats", async () => {
@@ -122,18 +95,22 @@ describe("SessionCommandService", () => {
     });
   });
 
-  it("starts compaction and publishes completion", async () => {
+  it("starts compaction, updates lifecycle hooks, and publishes completion", async () => {
     const active = activeSession();
     const events = eventPublisher();
-    const service = new SessionCommandService(() => getActive(active), vi.fn(), events);
+    const onCompactionStart = vi.fn();
+    const onCompactionEnd = vi.fn();
+    const service = new SessionCommandService(() => getActive(active), vi.fn(), events, { onCompactionStart, onCompactionEnd });
 
     await expect(service.run("s1", "/compact focus on tests")).resolves.toEqual({ type: "done", message: "Compaction started…" });
+    expect(onCompactionStart).toHaveBeenCalledWith(active.runtime.session);
     await vi.waitFor(() => {
       expect(events.publish).toHaveBeenCalledWith("s1", {
         type: "command.output",
         level: "success",
         message: "Compaction complete.\nTokens before: 123\n\nshort summary",
       });
+      expect(onCompactionEnd).toHaveBeenCalledWith(active.runtime.session, "success");
     });
     expect(active.runtime.session.compact).toHaveBeenCalledWith("focus on tests");
   });

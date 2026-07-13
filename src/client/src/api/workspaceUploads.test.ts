@@ -100,6 +100,43 @@ describe("workspace upload helpers", () => {
     ]);
   });
 
+  it("forwards createDirs through batch upload requests", async () => {
+    const xhrs = new FakeXhrQueue();
+    const file = new File(["hello"], "nested.txt", { type: "text/plain" });
+
+    const task = uploadWorkspaceFiles("p1", "w1", [file], {
+      destinationFolder: "uploads",
+      createDirs: false,
+      xhrFactory: xhrs.factory,
+    });
+
+    const xhr = xhrs.only();
+    expect(xhr.url).toBe("/api/machines/local/projects/p1/workspaces/w1/file?path=uploads%2Fnested.txt&createDirs=false");
+    xhr.respondJson(200, { path: "uploads/nested.txt", size: 5, modifiedAt: "2026-06-25T00:00:00.000Z", created: true });
+
+    await expect(task.promise).resolves.toEqual([
+      { path: "uploads/nested.txt", size: 5, modifiedAt: "2026-06-25T00:00:00.000Z", created: true },
+    ]);
+  });
+
+  it("cancels an in-flight batch upload without starting remaining files", async () => {
+    const xhrs = new FakeXhrQueue();
+    const files = [new File(["ab"], "a.txt"), new File(["cde"], "b.txt")];
+
+    const task = uploadWorkspaceFiles("p1", "w1", files, {
+      destinationFolder: "uploads",
+      xhrFactory: xhrs.factory,
+    });
+    const first = xhrs.only();
+    const cancellation = expect(task.promise).rejects.toBeInstanceOf(WorkspaceUploadCancelledError);
+
+    task.cancel();
+
+    await cancellation;
+    expect(first.aborted).toBe(true);
+    expect(xhrs.count()).toBe(1);
+  });
+
   it("continues batch uploads after per-file failures and reports the failed file only", async () => {
     const xhrs = new FakeXhrQueue();
     const progress: WorkspaceUploadBatchProgress[] = [];
@@ -145,6 +182,10 @@ class FakeXhrQueue {
 
   at(index: number): FakeXMLHttpRequest {
     return this.instances[index] ?? failTest(`missing XHR instance ${String(index)}`);
+  }
+
+  count(): number {
+    return this.instances.length;
   }
 }
 

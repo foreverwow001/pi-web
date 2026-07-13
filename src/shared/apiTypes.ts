@@ -6,8 +6,11 @@ export const PI_WEB_CAPABILITIES = {
   sessionsBulkMutations: "sessions.bulkMutations",
   sessionsCleanup: "sessions.cleanup",
   sessionsReload: "sessions.reload",
+  sessionsPersistedState: "sessions.persistedState",
   promptAttachments: "prompt.attachments",
   workspaceFileSuggestions: "workspace.fileSuggestions",
+  piPackagesManage: "piPackages.manage",
+  selectedMachineSettings: "settings.selectedMachine",
 } as const;
 
 export type PiWebCapability = typeof PI_WEB_CAPABILITIES[keyof typeof PI_WEB_CAPABILITIES];
@@ -98,6 +101,28 @@ export interface PiWebPluginInfo {
 
 export interface PiWebPluginsResponse {
   plugins: PiWebPluginInfo[];
+}
+
+export type PiPackageScope = "user" | "project";
+
+export interface PiPackageInfo {
+  source: string;
+  scope: PiPackageScope;
+  filtered: boolean;
+  installedPath?: string;
+}
+
+export interface PiPackagesResponse {
+  packages: PiPackageInfo[];
+}
+
+export type PiPackageMutationAction = "install" | "remove" | "update";
+
+export interface PiPackageMutationResponse extends PiPackagesResponse {
+  action: PiPackageMutationAction;
+  source?: string;
+  scope?: PiPackageScope;
+  removed?: boolean;
 }
 
 export interface PiWebConfigEnvOverrides {
@@ -535,7 +560,8 @@ export interface TerminalCommandRunFilter {
 
 export type PiWebServiceComponent = "web" | "sessiond";
 export type PiWebStatusSeverity = "info" | "warning" | "error";
-export type PiWebInstallationKind = "pi-package" | "npm-global" | "local" | "unknown";
+export type PiWebInstallationKind = "pi-package" | "npm-global" | "local" | "docker" | "unknown";
+export type PiWebDockerMode = "runtime" | "dev";
 
 export interface PiWebInstallationInfo {
   kind: PiWebInstallationKind;
@@ -543,6 +569,7 @@ export interface PiWebInstallationInfo {
   source?: string;
   scope?: "user" | "project";
   npmRoot?: string;
+  dockerMode?: PiWebDockerMode;
 }
 
 export interface PiWebComponentStatus {

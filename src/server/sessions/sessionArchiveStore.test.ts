@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { SessionArchiveStore } from "./sessionArchiveStore.js";
@@ -117,6 +117,54 @@ describe("SessionArchiveStore", () => {
       expect(await exists(archivePath)).toBe(false);
     }
     await expect(store.list()).resolves.toEqual([]);
+  });
+
+  it("prefers exact persisted session IDs over prefix matches and canonicalizes stored cwd", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-web-archive-prefix-"));
+    tempRoots.push(root);
+    const archiveFile = join(root, "archived-sessions.json");
+    const rawCwd = join(root, "workspace", "..", "workspace");
+    await writeFile(archiveFile, JSON.stringify({
+      sessions: [
+        {
+          sessionId: "abc123",
+          cwd: rawCwd,
+          archivedAt: "2026-01-01T00:00:00.000Z",
+          originalPath: "/sessions/abc123.jsonl",
+          archivePath: "/archive/abc123.jsonl",
+          messageCount: 3,
+          firstMessage: "prefix",
+          name: "Prefix match",
+          parentSessionPath: "/sessions/root.jsonl",
+        },
+        {
+          sessionId: "abc",
+          cwd: rawCwd,
+          archivedAt: "2026-01-01T00:00:00.000Z",
+          originalPath: "/sessions/abc.jsonl",
+          archivePath: "/archive/abc.jsonl",
+          messageCount: 1,
+          firstMessage: "exact",
+        },
+      ],
+    }), "utf8");
+
+    const store = new SessionArchiveStore(archiveFile, join(root, "archived-files"));
+
+    await expect(store.get("abc")).resolves.toMatchObject({
+      sessionId: "abc",
+      cwd: resolve(rawCwd),
+      firstMessage: "exact",
+    });
+    await expect(store.get("abc1")).resolves.toMatchObject({
+      sessionId: "abc123",
+      cwd: resolve(rawCwd),
+      firstMessage: "prefix",
+      name: "Prefix match",
+      parentSessionPath: "/sessions/root.jsonl",
+    });
+    await expect(store.isArchived("abc1")).resolves.toBe(true);
+    await expect(store.isArchived("missing")).resolves.toBe(false);
   });
 });
 

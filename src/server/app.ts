@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastify";
+import fastifyCompress from "@fastify/compress";
 import fastifyStatic from "@fastify/static";
 import fastifyWebsocket from "@fastify/websocket";
 import { ProjectStore } from "./storage/projectStore.js";
@@ -18,8 +19,10 @@ import { registerWorkspaceExplorerRoutes } from "./workspaceExplorerRoutes.js";
 import { registerGitRoutes } from "./gitRoutes.js";
 import { registerTerminalProxyRoutes } from "./terminalProxyRoutes.js";
 import { registerWorkspaceDeletionRoutes } from "./workspaces/workspaceDeletionRoutes.js";
-import { createFilePiWebConfigService, registerConfigRoutes, type PiWebConfigService } from "./configRoutes.js";
+import { createFilePiWebConfigService, registerConfigRoutes, registerLocalMachineConfigRoutes, type PiWebConfigService } from "./configRoutes.js";
 import { PiWebPluginService } from "./piWebPluginService.js";
+import { createDefaultPiPackageService, type PiPackageService } from "./piPackageService.js";
+import { registerPiPackageRoutes } from "./piPackageRoutes.js";
 import { createPiWebStatusCache } from "./piWebStatusCache.js";
 import { getPiWebRuntime, getPiWebStatus, getPiWebVersionStatus } from "./piWebStatus.js";
 import { MachineService } from "./machines/machineService.js";
@@ -37,6 +40,7 @@ export interface AppDependencies {
   machines?: MachineService;
   sessionDaemon?: SessionProxyDaemon;
   piWebPlugins?: Pick<PiWebPluginService, "manifest" | "plugins" | "readAsset">;
+  piPackages?: PiPackageService;
   config?: PiWebConfigService;
   clientDist?: string | false;
   logger?: FastifyServerOptions["logger"];
@@ -120,11 +124,19 @@ function registerLocalFileSuggestionRoutes(app: FastifyInstance, projects: Proje
 
 export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInstance> {
   const app = Fastify({ logger: deps.logger ?? true, bodyLimit: deps.bodyLimit ?? PI_WEB_REQUEST_BODY_LIMIT_BYTES });
+  // Vite proxies development API requests here, while production and machine-scoped
+  // API requests already terminate here, so this is the shared browser HTTP edge.
+  await app.register(fastifyCompress, {
+    globalCompression: true,
+    globalDecompression: false,
+    threshold: 1024,
+  });
   await app.register(fastifyWebsocket);
 
   const projects = deps.projects ?? new ProjectService(new ProjectStore());
   const workspaces = deps.workspaces ?? new WorkspaceService();
   const piWebPlugins = deps.piWebPlugins ?? new PiWebPluginService();
+  const piPackages = deps.piPackages ?? createDefaultPiPackageService();
   const configService = deps.config ?? createFilePiWebConfigService();
   const sessionDaemon = deps.sessionDaemon ?? new SessionDaemonClient();
   const piWebStatusCache = createPiWebStatusCache(() => getPiWebStatus(sessionDaemon), {
@@ -148,8 +160,12 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
   app.get("/api/pi-web/version", async () => getPiWebVersionStatus(sessionDaemon));
   app.get("/api/pi-web/runtime", async () => getPiWebRuntime(sessionDaemon));
   app.get("/api/plugins", async () => piWebPlugins.plugins());
+  app.get("/api/machines/local/plugins", async () => piWebPlugins.plugins());
   registerIvyhouseStatusPanelRoutes(app, sessionDaemon);
+  registerPiPackageRoutes(app, piPackages);
+  registerPiPackageRoutes(app, piPackages, "/api/machines/local");
   registerConfigRoutes(app, configService);
+  registerLocalMachineConfigRoutes(app, configService);
 
   registerMachineRoutes(app, machines);
   registerMachinePluginProxyRoutes(app, machines);
