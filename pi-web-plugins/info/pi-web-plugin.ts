@@ -10,6 +10,7 @@ type ServiceStatus = "ready" | "configured" | "failed" | "gated" | "disabled";
 interface StatusSnapshot {
   generatedAt: string;
   cwd: string;
+  sessionId?: string;
   metrics?: {
     totalInput?: number;
     totalOutput?: number;
@@ -41,8 +42,15 @@ interface PanelState {
 
 const panelStates = new Map<string, PanelState>();
 
-function panelKey(context: WorkspacePanelContext): string {
-  return `${context.machine.id}:${context.workspace.path}`;
+export function selectedSessionId(context: WorkspacePanelContext): string | undefined {
+  const selected = context.state?.selectedSession;
+  if (!isRecord(selected)) return undefined;
+  const id = selected["id"];
+  return typeof id === "string" && id.trim() !== "" ? id : undefined;
+}
+
+export function panelKey(context: WorkspacePanelContext): string {
+  return `${context.machine.id}:${context.workspace.path}:${selectedSessionId(context) ?? "no-session"}`;
 }
 
 function panelState(context: WorkspacePanelContext): PanelState {
@@ -55,8 +63,11 @@ function panelState(context: WorkspacePanelContext): PanelState {
   return state;
 }
 
-function statusUrl(context: WorkspacePanelContext): string {
-  return `/api/ivyhouse/status-panel?cwd=${encodeURIComponent(context.workspace.path)}`;
+export function statusUrl(context: WorkspacePanelContext): string {
+  const query = new URLSearchParams({ cwd: context.workspace.path });
+  const sessionId = selectedSessionId(context);
+  if (sessionId !== undefined) query.set("sessionId", sessionId);
+  return `/api/ivyhouse/status-panel?${query.toString()}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

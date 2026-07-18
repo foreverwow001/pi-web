@@ -25,6 +25,7 @@ interface IvyhouseFooterControlsResponse {
 interface IvyhouseStatusPanelResponse {
   generatedAt: string;
   cwd: string;
+  sessionId?: string;
   metrics: {
     totalInput?: number;
     totalOutput?: number;
@@ -64,9 +65,9 @@ interface CachedReadiness {
 const readinessCache = new Map<string, CachedReadiness>();
 
 export function registerIvyhouseStatusPanelRoutes(app: FastifyInstance, daemon: SessionProxyDaemon = new SessionDaemonClient()): void {
-  app.get<{ Querystring: { cwd?: string } }>("/api/ivyhouse/status-panel", async (request, reply) => {
+  app.get<{ Querystring: { cwd?: string; sessionId?: string } }>("/api/ivyhouse/status-panel", async (request, reply) => {
     try {
-      return await buildStatusPanel(resolveCwd(request.query.cwd), daemon);
+      return await buildStatusPanel(resolveCwd(request.query.cwd), normalizeSessionId(request.query.sessionId), daemon);
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -124,11 +125,11 @@ export function registerIvyhouseStatusPanelRoutes(app: FastifyInstance, daemon: 
   });
 }
 
-async function buildStatusPanel(cwd: string, daemon: SessionProxyDaemon): Promise<IvyhouseStatusPanelResponse> {
+async function buildStatusPanel(cwd: string, sessionId: string | undefined, daemon: SessionProxyDaemon): Promise<IvyhouseStatusPanelResponse> {
   const [gate, sidebarSnapshot, todoSnapshot, mcpServers, lspServers, plugins, backgroundShells] = await Promise.all([
     readGateMode(cwd).then(normalizeGateMode),
     readSidebarSnapshot(cwd),
-    readTodoSnapshot(cwd),
+    readTodoSnapshot(cwd, sessionId),
     readMcpServers(cwd),
     readLspServers(cwd),
     readPlugins(cwd),
@@ -151,6 +152,7 @@ async function buildStatusPanel(cwd: string, daemon: SessionProxyDaemon): Promis
   return {
     generatedAt: new Date().toISOString(),
     cwd,
+    ...(sessionId === undefined ? {} : { sessionId }),
     metrics,
     gateAutoAnswer: gate,
     plan: { items: todoSnapshot },
@@ -169,6 +171,15 @@ function resolveCwd(cwd: string | undefined): string {
 
 function cwdHash(cwd: string): string {
   return createHash("sha256").update(resolve(cwd)).digest("hex").slice(0, 16);
+}
+
+function sessionHash(sessionId: string): string {
+  return createHash("sha256").update(sessionId).digest("hex").slice(0, 16);
+}
+
+function normalizeSessionId(sessionId: string | undefined): string | undefined {
+  const normalized = typeof sessionId === "string" ? sessionId.trim() : "";
+  return normalized.length > 0 && normalized.length <= 256 ? normalized : undefined;
 }
 
 function footerControlsStatePath(cwd: string): string {
@@ -272,12 +283,15 @@ async function readSidebarSnapshot(cwd: string): Promise<{ usage?: Record<string
   return isRecord(parsed["snapshot"]) ? parsed["snapshot"] : undefined;
 }
 
-async function readTodoSnapshot(cwd: string): Promise<IvyhouseStatusPanelResponse["plan"]["items"]> {
-  const exactPath = join(STATE_DIR, `todo-state-${cwdHash(cwd)}.json`);
-  if (existsSync(exactPath)) return parseTodoItems(await readJson(exactPath));
-  if (!await hasActiveSessionForCwd(cwd)) return [];
-  const fallback = await readLatestTodoSnapshot();
-  return parseTodoItems(fallback);
+export function ivyhouseTodoSnapshotPath(cwd: string, sessionId: string, stateDir: string = STATE_DIR): string {
+  return join(stateDir, `todo-state-${cwdHash(cwd)}-${sessionHash(sessionId)}.json`);
+}
+
+export async function readTodoSnapshot(cwd: string, sessionId: string | undefined, stateDir: string = STATE_DIR): Promise<IvyhouseStatusPanelResponse["plan"]["items"]> {
+  if (sessionId === undefined) return [];
+  const parsed = await readJson(ivyhouseTodoSnapshotPath(cwd, sessionId, stateDir));
+  if (!isRecord(parsed) || parsed["sessionId"] !== sessionId || typeof parsed["cwd"] !== "string" || resolve(parsed["cwd"]) !== resolve(cwd)) return [];
+  return parseTodoItems(parsed);
 }
 
 function parseTodoItems(parsed: unknown): IvyhouseStatusPanelResponse["plan"]["items"] {
@@ -291,27 +305,6 @@ function parseTodoItems(parsed: unknown): IvyhouseStatusPanelResponse["plan"]["i
     if (status !== "pending" && status !== "in_progress" && status !== "completed" && status !== "deleted") return [];
     return [{ id, text: subject, status }];
   });
-}
-
-async function hasActiveSessionForCwd(cwd: string): Promise<boolean> {
-  const parsed = await readJson(join(STATE_DIR, `active-session-${cwdHash(cwd)}.json`));
-  return isRecord(parsed) && parsed["cwd"] === cwd;
-}
-
-async function readLatestTodoSnapshot(): Promise<unknown> {
-  try {
-    let latest: { path: string; updatedAt: number } | undefined;
-    for (const entry of await readdir(STATE_DIR)) {
-      if (!entry.startsWith("todo-state-") || !entry.endsWith(".json")) continue;
-      const path = join(STATE_DIR, entry);
-      const parsed = await readJson(path);
-      const updatedAt = isRecord(parsed) && typeof parsed["updatedAt"] === "number" ? parsed["updatedAt"] : (await stat(path)).mtimeMs;
-      if (latest === undefined || updatedAt > latest.updatedAt) latest = { path, updatedAt };
-    }
-    return latest === undefined ? undefined : await readJson(latest.path);
-  } catch {
-    return undefined;
-  }
 }
 
 async function readMcpServers(cwd: string): Promise<IvyhouseStatusPanelResponse["mcpServers"]> {
