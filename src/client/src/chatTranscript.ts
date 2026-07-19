@@ -63,7 +63,18 @@ export function applyTranscriptEvent(messages: ChatLine[], event: SessionUiEvent
   if (event.type === "command.output") return [...messages, textMessage(event.level === "error" ? "system" : "tool", event.message)];
   if (event.type === "session.error") return [...messages, textMessage("system", event.message)];
   if (event.type === "message.end") return event.message === undefined ? undefined : applyFinalMessage(messages, event.message);
+  if (event.type === "round.usage") return appendRoundUsage(messages, event.usage);
   return undefined;
+}
+
+function appendRoundUsage(messages: ChatLine[], usage: Extract<SessionUiEvent, { type: "round.usage" }>["usage"]): ChatLine[] {
+  for (let lineIndex = messages.length - 1; lineIndex >= 0; lineIndex--) {
+    const line = messages[lineIndex];
+    if (line?.role !== "assistant") continue;
+    const parts = line.parts.filter((part) => part.type !== "roundUsage");
+    return [...messages.slice(0, lineIndex), { ...line, parts: [...parts, { type: "roundUsage", usage }] }, ...messages.slice(lineIndex + 1)];
+  }
+  return messages;
 }
 
 function applyFinalMessage(messages: ChatLine[], rawMessage: unknown): ChatLine[] | undefined {
@@ -84,8 +95,17 @@ function applyFinalLine(messages: ChatLine[], displayEnded: ChatLine): ChatLine[
   if (skillReadIndexes.length > 0) return replaceSkillReadLines(messages, skillReadIndexes, displayEnded);
   const last = messages.at(-1);
   if (last?.role !== displayEnded.role) return [...messages, displayEnded];
-  if (displayEnded.role === "assistant" || sameMessageText(last, displayEnded)) return [...messages.slice(0, -1), displayEnded];
+  if (displayEnded.role === "assistant" || sameMessageText(last, displayEnded)) return [...messages.slice(0, -1), preserveRoundUsage(last, displayEnded)];
   return [...messages, displayEnded];
+}
+
+function preserveRoundUsage(previous: ChatLine, next: ChatLine): ChatLine {
+  if (next.role !== "assistant") return next;
+  const usageParts = previous.parts.filter((part) => part.type === "roundUsage");
+  const lastUsage = usageParts.at(-1);
+  if (lastUsage === undefined) return next;
+  const nonUsageParts = next.parts.filter((part) => part.type !== "roundUsage");
+  return { ...next, parts: [...nonUsageParts, lastUsage] };
 }
 
 function withoutToolCalls(message: ChatLine): ChatLine {

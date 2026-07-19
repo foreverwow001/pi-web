@@ -194,49 +194,6 @@ export function findOptionalTemplateEventHandlerAfterMarker<E extends Event = Ev
 }
 
 /**
- * Find an event handler that appears after a specific interpolated value.
- *
- * Anchors to a stable value (e.g. an accessible label like `Remove report.pdf`)
- * and then locates the handler tagged by `marker` (e.g. `@click=`) that follows
- * it, so the wiring is tied to user-facing content rather than handler order.
- */
-export function templateEventHandlerAfterValue<E extends Event = Event>(template: TemplateResult, expectedValue: unknown, marker: string): TemplateEventHandler<E> {
-  const handler = findOptionalTemplateEventHandlerAfterValue<E>(template, expectedValue, marker);
-  if (handler === undefined) throw new Error(`Expected template event handler after value ${String(expectedValue)}`);
-  return handler;
-}
-
-/** Optional variant of {@link templateEventHandlerAfterValue}. */
-export function findOptionalTemplateEventHandlerAfterValue<E extends Event = Event>(template: TemplateResult, expectedValue: unknown, marker: string): TemplateEventHandler<E> | undefined {
-  const strings = templateStrings(template);
-  const values = templateValues(template);
-  for (let index = 0; index < values.length; index += 1) {
-    const value = values[index];
-    if (value === expectedValue) {
-      for (let handlerIndex = index + 1; handlerIndex < values.length; handlerIndex += 1) {
-        const candidate = values[handlerIndex];
-        if (strings[handlerIndex]?.includes(marker) === true && isTemplateEventHandler<E>(candidate)) return candidate;
-      }
-    }
-    const nested = findInValue(value);
-    if (nested !== undefined) return nested;
-  }
-  return undefined;
-
-  function findInValue(value: unknown): TemplateEventHandler<E> | undefined {
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        const nested = findInValue(item);
-        if (nested !== undefined) return nested;
-      }
-      return undefined;
-    }
-    if (isTemplateResult(value)) return findOptionalTemplateEventHandlerAfterValue<E>(value, expectedValue, marker);
-    return undefined;
-  }
-}
-
-/**
  * Find a click handler on the deepest template whose flattened text includes
  * `text`.
  *

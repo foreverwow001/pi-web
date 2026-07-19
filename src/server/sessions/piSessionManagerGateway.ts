@@ -1,5 +1,5 @@
 import type { Dirent } from "node:fs";
-import { readdir } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
@@ -97,8 +97,53 @@ export async function listSessionsInDir(sessionDir: string): Promise<PiSessionLi
   // Cwd filtering is applied explicitly by filterSessionsForCwd where needed.
   // Session file headers are written by external tools (Pi CLI, SDK consumers),
   // so their cwd is canonicalized here before it enters pi-web.
-  const sessions = await SessionManager.listAll(sessionDir);
-  return sessions.map((session) => ({ ...session, cwd: canonicalizeStoredCwd(session.cwd) }));
+  const sdkSessions = await SessionManager.listAll(sessionDir);
+  if (sdkSessions.length > 0) return sdkSessions.map((session) => ({ ...session, cwd: canonicalizeStoredCwd(session.cwd) }));
+  return listSessionsInDirFromJsonl(sessionDir);
+}
+
+async function listSessionsInDirFromJsonl(sessionDir: string): Promise<PiSessionListEntry[]> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(sessionDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const sessions = await Promise.all(entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
+    .map(async (entry) => sessionEntryFromJsonl(join(sessionDir, entry.name))));
+  return sessions
+    .filter((entry): entry is PiSessionListEntry => entry !== undefined)
+    .sort((a, b) => b.modified.getTime() - a.modified.getTime());
+}
+
+async function sessionEntryFromJsonl(path: string): Promise<PiSessionListEntry | undefined> {
+  try {
+    const [fileStat, content] = await Promise.all([stat(path), readFile(path, "utf8")]);
+    const lines = content.split(/\r?\n/u).filter((line) => line.trim() !== "");
+    let id = sessionIdFromFilePath(path);
+    let cwd = "";
+    let firstMessage = "";
+    let name: string | undefined;
+    for (const line of lines) {
+      let parsed: unknown;
+      try { parsed = JSON.parse(line); } catch { continue; }
+      if (!isRecord(parsed)) continue;
+      const record = parsed;
+      if (record["type"] === "session") {
+        if (typeof record["id"] === "string" && record["id"] !== "") id = record["id"];
+        if (typeof record["cwd"] === "string" && record["cwd"] !== "") cwd = canonicalizeStoredCwd(record["cwd"]);
+        if (typeof record["name"] === "string" && record["name"] !== "") name = record["name"];
+      }
+      const message = isRecord(record["message"]) ? record["message"] : undefined;
+      if (firstMessage === "" && message?.["role"] === "user") firstMessage = messageContentText(message["content"]);
+      if (firstMessage === "" && record["role"] === "user") firstMessage = messageContentText(record["content"]);
+    }
+    if (id === "" || cwd === "") return undefined;
+    return { id, path, cwd, created: fileStat.birthtime, modified: fileStat.mtime, messageCount: lines.length, firstMessage, allMessagesText: content, ...(name === undefined ? {} : { name }) };
+  } catch {
+    return undefined;
+  }
 }
 
 export async function listSessionsInDefaultPiStore(storeRoot: string): Promise<PiSessionListEntry[]> {
@@ -148,4 +193,23 @@ function expandTildePath(path: string, homeDir: string): string {
   if (path === "~") return homeDir;
   if (path.startsWith("~/")) return join(homeDir, path.slice(2));
   return path;
+}
+
+function sessionIdFromFilePath(path: string): string {
+  const fileName = path.split(/[/\\]/u).pop()?.replace(/\.jsonl$/u, "") ?? "";
+  const separator = fileName.lastIndexOf("_");
+  return separator >= 0 ? fileName.slice(separator + 1) : fileName;
+}
+
+function messageContentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => isRecord(part) && part["type"] === "text" && typeof part["text"] === "string" ? part["text"] : "")
+    .filter((text) => text !== "")
+    .join("\n");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }

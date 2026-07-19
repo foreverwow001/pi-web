@@ -38,6 +38,19 @@ describe("mergeChatHistory", () => {
     expect(mergeChatHistory(page(0, 10, ["a", "b"]), incoming)).toEqual(incoming);
   });
 
+  it("uses latest API tail page as source of truth and drops stale cached tail", () => {
+    const existing = page(0, 5, ["a", "b", "stale-c", "stale-d", "stale-e"]);
+    const incoming = page(2, 4, ["fresh-c", "fresh-d"]);
+
+    expect(mergeChatHistory(existing, incoming)).toEqual(page(0, 4, ["a", "b", "fresh-c", "fresh-d"]));
+  });
+
+  it("uses incoming tail page when cached history does not connect to it", () => {
+    const incoming = page(8, 10, ["fresh-i", "fresh-j"]);
+
+    expect(mergeChatHistory(page(0, 12, ["stale-a", "stale-b", "stale-c"]), incoming)).toEqual(incoming);
+  });
+
   it("uses incoming history when cached history contains normalized chat lines", () => {
     const incoming = page(0, 2, [{ role: "user", content: "fresh" }, { role: "assistant", content: "answer" }]);
     const normalizedLine = { role: "assistant", parts: [{ type: "text", text: "duplicated display line" }] };

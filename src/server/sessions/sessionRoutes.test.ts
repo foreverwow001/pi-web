@@ -4,7 +4,7 @@ import fastifyWebsocket from "@fastify/websocket";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { MessagePage, SessionBulkArchiveResponse, SessionBulkDeleteArchivedResponse, SessionBulkMutationRef, SessionCleanupExecuteResponse, SessionCleanupPreviewResponse, SessionStatus, SessionStreamSnapshot } from "../../shared/apiTypes.js";
 import { SessionEventHub } from "../realtime/sessionEventHub.js";
-import { PiSessionService, type PiSessionManagerGateway } from "./piSessionService.js";
+import { PiSessionService, SessionHistoryConflictError, type PiSessionManagerGateway } from "./piSessionService.js";
 import { testModelRuntime } from "./piSessionService.testSupport.js";
 import type { SessionRouteLookup, SessionRouteService } from "./sessionService.js";
 import { registerSessionRoutes } from "./sessionRoutes.js";
@@ -37,6 +37,24 @@ describe("session routes", () => {
     expect(response.statusCode).toBe(400);
     expect(response.json()).toEqual({ error: "Prompt text is required" });
     expect(sessionManager.calls).toEqual({ create: 0, list: 0, listAll: 0, open: 0 });
+  });
+
+  it("returns conflict without accepting a prompt when persisted history advanced", async () => {
+    const routeApp = Fastify({ logger: false });
+    await routeApp.register(fastifyWebsocket);
+    const eventHub = new SessionEventHub();
+    const routeService = new CapturingRouteSessionService();
+    routeService.promptError = new SessionHistoryConflictError();
+    registerSessionRoutes(routeApp, routeService, eventHub);
+
+    try {
+      const response = await routeApp.inject({ method: "POST", url: "/sessions/session-1/prompt", payload: { text: "hello" } });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ error: routeService.promptError.message });
+    } finally {
+      await routeService.dispose();
+      await routeApp.close();
+    }
   });
 
   it("keeps legacy per-session routes usable without cwd", async () => {
@@ -395,6 +413,7 @@ class CapturingRouteSessionService implements SessionRouteService {
   readonly bulkDeleteCalls: SessionBulkMutationRef[][] = [];
   reloadError: Error | undefined;
   clearQueueError: Error | undefined;
+  promptError: Error | undefined;
 
   cleanupPreview(request: NormalizedSessionCleanupRequest): Promise<SessionCleanupPreviewResponse> {
     this.cleanupPreviewCalls.push(request);
@@ -492,6 +511,7 @@ class CapturingRouteSessionService implements SessionRouteService {
 
   prompt(lookup: SessionRouteLookup, text: unknown, _streamingBehavior?: unknown, attachments?: unknown): Promise<void> {
     this.calls.push(attachments === undefined ? { lookup, text } : { lookup, text, attachments });
+    if (this.promptError !== undefined) return Promise.reject(this.promptError);
     return Promise.resolve();
   }
 

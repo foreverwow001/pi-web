@@ -113,6 +113,21 @@ describe("createSubsessionToolDefinitions", () => {
     });
   });
 
+  it("spawn_subsession omits the inherited model when the dispatching session has no current model", async () => {
+    const spawn = vi.fn(() => Promise.resolve({ sessionId: "child-2", cwd: "/repos/a" }));
+    const { spawn: spawnTool } = tools({ spawn });
+
+    await spawnTool.execute("call-modeless", { prompt: "do it" }, undefined, undefined, ctxFor("parent-1", undefined));
+
+    expect(spawn).toHaveBeenCalledWith({
+      spawningCwd: "/repos/a",
+      parentSessionId: "parent-1",
+      parentSessionFile: undefined,
+      prompt: "do it",
+      cwd: undefined,
+    });
+  });
+
   it("list_subsessions reports the caller's subsessions and their status", async () => {
     const list = vi.fn(() => Promise.resolve([
       { sessionId: "child-1", cwd: "/repos/a", status: "working" as const },

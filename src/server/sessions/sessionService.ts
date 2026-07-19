@@ -23,6 +23,25 @@ import type { NormalizedSessionCleanupRequest } from "./sessionCleanup.js";
 export type SessionRouteRef = ClientSessionRef;
 export type SessionRouteLookup = string | SessionRouteRef;
 
+export type ExtensionUiMethod = "select" | "confirm" | "input";
+
+export interface ExtensionUiRequest {
+  requestId: string;
+  method: ExtensionUiMethod;
+  title?: string;
+  message?: string;
+  placeholder?: string;
+  options?: readonly string[];
+  createdAt: string;
+  timeoutMs: number;
+}
+
+export interface ExtensionUiResponse {
+  value?: unknown;
+  confirmed?: unknown;
+  cancelled?: unknown;
+}
+
 /**
  * Route-facing session contract for PI WEB's HTTP/WebSocket API.
  *
@@ -54,6 +73,8 @@ export interface SessionRouteService {
   shell(ref: SessionRouteLookup, text: string): Promise<void>;
   runCommand(ref: SessionRouteLookup, text: string): Promise<ClientCommandResult>;
   respondToCommand(ref: SessionRouteLookup, requestId: string, value: string): Promise<ClientCommandResult>;
+  listExtensionUiPending?(ref: SessionRouteLookup): Promise<{ requests: readonly ExtensionUiRequest[] }>;
+  respondExtensionUi?(ref: SessionRouteLookup, requestId: string, response: ExtensionUiResponse): Promise<{ accepted: true }>;
   abort(ref: SessionRouteLookup): Promise<void>;
   stop(ref: SessionRouteLookup): void | Promise<void>;
   archive(ref: SessionRouteLookup): Promise<void>;

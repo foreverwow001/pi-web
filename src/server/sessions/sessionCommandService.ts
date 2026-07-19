@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import type { ExtensionCommandContext, ResolvedCommand } from "@earendil-works/pi-coding-agent";
 import type { SessionUiEvent } from "../../shared/apiTypes.js";
 import type { ClientCommandResult, ClientSession } from "../types.js";
 import { isBuiltinCommand } from "./builtinCommands.js";
@@ -13,7 +14,11 @@ export interface CommandSession {
   isCompacting: boolean;
   pendingMessageCount: number;
   promptTemplates: readonly { name: string }[];
-  extensionRunner: { getRegisteredCommands(): readonly { invocationName: string }[] };
+  extensionRunner: {
+    getRegisteredCommands(): readonly { invocationName: string }[];
+    getCommand?(name: string): ResolvedCommand | undefined;
+    createCommandContext?(): ExtensionCommandContext;
+  };
   resourceLoader: { getSkills(): { skills: readonly { name: string }[] } };
   sessionManager: { getLeafId(): string | null; getHeader?: () => { parentSession?: string } | null | undefined };
   setSessionName: (name: string) => void;
@@ -82,6 +87,19 @@ export class SessionCommandService<TSession extends CommandSession = CommandSess
     const rest = args.join(" ").trim();
 
     if (!isBuiltinCommand(name)) {
+      const runtimeCommand = session.extensionRunner.getCommand?.(name);
+      if (runtimeCommand !== undefined && typeof session.extensionRunner.createCommandContext === "function") {
+        void Promise.resolve(runtimeCommand.handler(rest, session.extensionRunner.createCommandContext()))
+          .then(() => {
+            this.events.publish(sessionId, { type: "command.output", level: "success", message: `Command completed: /${name}` });
+          })
+          .catch((error: unknown) => {
+            const message = error instanceof Error ? error.message : String(error);
+            this.events.publish(sessionId, { type: "command.output", level: "error", message: `Command failed: /${name}: ${message}` });
+            this.events.publish(sessionId, { type: "session.error", message });
+          });
+        return { type: "done", message: `Started /${name}` };
+      }
       if (this.isRuntimeCommand(session, name)) {
         // The command is forwarded to the agent, which expands it (e.g. /skill:*
         // into a skill block) and streams the canonical message back. That is the

@@ -133,12 +133,10 @@ export interface PiPackageInstallRequest {
 
 export interface PiPackageRemoveRequest {
   source: string;
-  /** Optional known scope from a listed package; not an install-location picker. */
   scope?: PiPackageScope;
 }
 
 export interface PiPackageUpdateRequest {
-  /** Omit to update all configured Pi packages. */
   source?: string;
 }
 
@@ -331,14 +329,14 @@ export interface PromptFileAttachment {
 
 export type PromptAttachment = PromptImageAttachment | PromptFileAttachment;
 
+export type PromptAttachmentDelivery = "inline" | "folder";
+
 /**
  * How prompt attachments should be delivered to the session.
  * - "inline": send the binary to pi as native image content (multimodal input).
  * - "folder": save the file into the workspace and reference it from the prompt
  *   text so the agent reads it with its own tools.
  */
-export type PromptAttachmentDelivery = "inline" | "folder";
-
 export interface SavedPromptAttachment {
   /** Workspace-relative path the attachment was written to. */
   path: string;
@@ -358,6 +356,17 @@ export interface SessionModel {
 // module. Wire/data fields below intentionally use `string` so an unknown level
 // from a newer pi runtime parses and renders gracefully instead of failing.
 export type { ThinkingLevel } from "./thinkingLevels.js";
+
+export type IvyhouseFooterMode = "default" | "build" | "plan";
+export type IvyhouseFastOverride = "auto" | "on" | "off";
+
+export interface IvyhouseFooterControlsResponse {
+  cwd: string;
+  mode: IvyhouseFooterMode;
+  fastOverride: IvyhouseFastOverride;
+  fastEnabled: boolean;
+  stateFile: string;
+}
 
 export type AuthType = "oauth" | "api_key";
 export type AuthStatusSource = "stored" | "runtime" | "environment" | "fallback" | "models_json_key" | "models_json_command";
@@ -438,19 +447,25 @@ export interface SessionWarning {
   dismiss?: { id: string };
 }
 
+export interface SessionExtensionStatus {
+  key: string;
+  label: string;
+}
+
 export interface SessionStatus {
   sessionId: string;
   /** True when the server has verified a backing session file exists; false when known transient. */
   persisted?: boolean;
   model?: SessionModel;
   thinkingLevel?: string;
+  extensionStatuses?: SessionExtensionStatus[];
   isStreaming: boolean;
   isCompacting: boolean;
   isBashRunning: boolean;
   pendingMessageCount: number;
   queuedMessages: QueuedSessionMessage[];
   messageCount?: number;
-  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
+  tokens: UsageTokens;
   cost: number;
   contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null };
   /**
@@ -749,6 +764,40 @@ export interface SessionStreamSnapshot {
   partial: unknown;
 }
 
+export interface UsageTokens {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  total: number;
+}
+
+export interface UsageBreakdown {
+  tokens: UsageTokens;
+  cost: number;
+}
+
+export interface RoundChildUsage extends UsageBreakdown {
+  role?: string;
+  childSessionId?: string;
+  summaryPath?: string;
+  evidencePath?: string;
+  hasUsage: boolean;
+}
+
+export interface RoundUsageSnapshot {
+  roundId: string;
+  sessionId: string;
+  assistantMessageId?: string;
+  status: "complete" | "partial";
+  parent: UsageBreakdown;
+  child: UsageBreakdown;
+  total: UsageBreakdown;
+  childRuns: number;
+  childUsagePending: boolean;
+  children: RoundChildUsage[];
+}
+
 export type CommandResult =
   | { type: "done"; message?: string; session?: SessionInfo; promptDraft?: string }
   | { type: "select"; requestId: string; title: string; options: CommandOption[] }
@@ -775,9 +824,11 @@ type SessionUiEventBody =
   | { type: "agent.start" }
   | { type: "agent.end" }
   | { type: "message.end"; message?: unknown }
+  | { type: "round.usage"; usage: RoundUsageSnapshot }
   | { type: "status.update"; status: SessionStatus }
   | { type: "activity.update"; activity: SessionActivity }
   | { type: "command.output"; level: "info" | "success" | "error"; message: string }
+  | { type: "extension.ui.request"; request: unknown }
   | { type: "session.error"; message: string }
   | { type: "session.name"; sessionId: string; name?: string }
   | { type: "session.created"; session: SessionInfo }

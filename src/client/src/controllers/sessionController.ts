@@ -765,6 +765,16 @@ export class SessionController {
     }
   }
 
+  async refreshSelectedSessionStatus(sessionId = this.getState().selectedSession?.id): Promise<void> {
+    const session = this.getState().selectedSession;
+    if (sessionId === undefined || session?.id !== sessionId || session.archived === true || isClientPendingStartSessionInfo(session)) return;
+    try {
+      this.applyStatus(await this.api.status(session, selectedMachineId(this.getState())));
+    } catch (error) {
+      if (this.getState().selectedSession?.id === sessionId) this.setState({ error: String(error) });
+    }
+  }
+
   refreshSelectedSession(sessionId = this.getState().selectedSession?.id): Promise<void> {
     const session = this.getState().selectedSession;
     if (sessionId === undefined || session?.id !== sessionId || session.archived === true || isClientPendingStartSessionInfo(session)) return Promise.resolve();

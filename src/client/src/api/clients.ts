@@ -1,4 +1,4 @@
-import type { DeleteWorkspaceFileResponse, FileSuggestion, MoveWorkspaceFileOptions, PiPackageInstallRequest, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiWebConfigValues, PromptAttachment, RunTerminalCommandInput, SessionBulkMutationRef, SessionCleanupRequest, SessionRef, TerminalCommandRun, TerminalCommandRunFilter, WriteWorkspaceFileOptions } from "../../../shared/apiTypes";
+import type { DeleteWorkspaceFileResponse, FileSuggestion, IvyhouseFooterMode, MoveWorkspaceFileOptions, PiPackageInstallRequest, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiWebConfigValues, PromptAttachment, RunTerminalCommandInput, SessionBulkMutationRef, SessionCleanupRequest, SessionRef, TerminalCommandRun, TerminalCommandRunFilter, WriteWorkspaceFileOptions } from "../../../shared/apiTypes";
 import { resolveAppUrl } from "../appUrl";
 import { request } from "./http";
 import {
@@ -17,6 +17,7 @@ import {
   parseFileTreeResponse,
   parseGitDiffResponse,
   parseGitStatusResponse,
+  parseIvyhouseFooterControlsResponse,
   parseMachine,
   parseMachineHealth,
   parseMachineRuntime,
@@ -159,6 +160,17 @@ export const piPackagesApi = {
 
 export const activityApi = {
   workspaceActivity: (machineId = "local") => request(`${machinePrefix(machineId)}/activity`, parseWorkspaceActivityResponse),
+};
+
+function cwdQuery(cwd: string | undefined): string {
+  if (cwd === undefined || cwd === "") return "";
+  return `?${new URLSearchParams({ cwd }).toString()}`;
+}
+
+export const ivyhouseApi = {
+  footerControls: (cwd?: string) => request(`/api/ivyhouse/footer-controls${cwdQuery(cwd)}`, parseIvyhouseFooterControlsResponse),
+  setFooterMode: (cwd: string, mode: IvyhouseFooterMode) => request("/api/ivyhouse/footer-controls/mode", parseIvyhouseFooterControlsResponse, { method: "POST", body: JSON.stringify({ cwd, mode }) }),
+  toggleFast: (cwd: string) => request("/api/ivyhouse/footer-controls/fast/toggle", parseIvyhouseFooterControlsResponse, { method: "POST", body: JSON.stringify({ cwd }) }),
 };
 
 export const projectsApi = {
@@ -327,8 +339,8 @@ export const api = {
   ...machinesApi,
   ...configApi,
   ...pluginsApi,
-  ...piPackagesApi,
   ...activityApi,
+  ...ivyhouseApi,
   ...projectsApi,
   ...workspacesApi,
   ...sessionsApi,

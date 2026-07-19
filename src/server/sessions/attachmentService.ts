@@ -1,8 +1,6 @@
 import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
-import type { ImageContent } from "@earendil-works/pi-ai";
-import { formatDimensionNote, resizeImage } from "@earendil-works/pi-coding-agent";
-import type { PromptAttachment, PromptImageAttachment, SavedPromptAttachment } from "../../shared/apiTypes.js";
+import type { PromptAttachment, SavedPromptAttachment } from "../../shared/apiTypes.js";
 import { extensionForImageMimeType } from "../../shared/promptAttachments.js";
 import { ensureInside, isNodeErrorWithCode, resolveParentInsideWorkspace } from "../workspaces/pathSafety.js";
 
@@ -11,35 +9,6 @@ import { ensureInside, isNodeErrorWithCode, resolveParentInsideWorkspace } from 
  * attachments for the agent to read with its own tools.
  */
 export const DEFAULT_ATTACHMENT_FOLDER = ".pi-web/attachments";
-
-export interface InlineImage {
-  image: ImageContent;
-  /** Optional human-readable dimension note produced by pi when resizing. */
-  dimensionNote?: string;
-}
-
-/**
- * Convert validated attachments into pi-compatible inline image content.
- *
- * Mirrors pi's own CLI/TUI behaviour: each image is run through pi's
- * `resizeImage` so it fits within pi's max dimensions and inline byte budget
- * (2000x2000, ~4.5MB base64). Images that cannot be resized below the limit
- * are dropped, matching pi's `[Image omitted]` behaviour.
- */
-export async function attachmentsToInlineImages(attachments: PromptImageAttachment[]): Promise<InlineImage[]> {
-  const results: InlineImage[] = [];
-  for (const attachment of attachments) {
-    const bytes = Buffer.from(attachment.data, "base64");
-    const resized = await resizeImage(bytes, attachment.mimeType);
-    if (resized === null) continue;
-    const note = formatDimensionNote(resized);
-    results.push({
-      image: { type: "image", data: resized.data, mimeType: resized.mimeType },
-      ...(note === undefined ? {} : { dimensionNote: note }),
-    });
-  }
-  return results;
-}
 
 export interface SaveAttachmentsOptions {
   /** Workspace-relative folder to write into. Defaults to `.pi-web/attachments`. */

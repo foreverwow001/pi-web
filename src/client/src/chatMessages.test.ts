@@ -102,6 +102,64 @@ describe("chat message normalization", () => {
       textMessage("bash", "excluded from context\n\n$ npm test\n\nok\n\nexit 0\n\noutput truncated\n\nfull output: /tmp/out.log"),
     ]);
   });
+
+  it("renders pi-web attachment package as user text plus attachment summary", () => {
+    expect(normalizeMessage({
+      role: "user",
+      content: "<pi-web-user-message>\nReview this\n</pi-web-user-message>\n\n<pi-web-attachments>\n<attachment filename=\"notes.md\" kind=\"text\" mime=\"text/markdown\" size=\"11\" status=\"included\">\nhello\n</attachment>\n</pi-web-attachments>",
+    })).toEqual([
+      { role: "user", parts: [
+        { type: "text", text: "Review this" },
+        { type: "attachmentSummary", attachments: [{ filename: "notes.md", kind: "text", mime: "text/markdown", size: 11, status: "included", warnings: [] }] },
+      ] },
+    ]);
+  });
+
+  it("renders packaged array content as user text plus attachment summary and hides inline image marker", () => {
+    expect(normalizeMessage({
+      role: "user",
+      content: [
+        { type: "text", text: "<pi-web-user-message>\nReview image\n</pi-web-user-message>\n\n<pi-web-attachments>\n<attachment filename=\"screen.png\" kind=\"image\" mime=\"image/png\" size=\"20\" status=\"included\">\nSaved image path: /tmp/screen.png\nInline image was sent to Pi vision input.\n</attachment>\n</pi-web-attachments>" },
+        { type: "image", data: "abc", mimeType: "image/png" },
+      ],
+    })).toEqual([
+      { role: "user", parts: [
+        { type: "text", text: "Review image" },
+        { type: "attachmentSummary", attachments: [{ filename: "screen.png", kind: "image", mime: "image/png", size: 20, status: "included", warnings: [] }] },
+      ] },
+    ]);
+  });
+
+  it("normalizes persisted round usage on assistant history messages", () => {
+    const roundUsage = {
+      roundId: "round-1",
+      sessionId: "session-1",
+      status: "complete",
+      parent: { tokens: { input: 10, output: 5, cacheRead: 2, cacheWrite: 0, total: 17 }, cost: 0.01 },
+      child: { tokens: { input: 20, output: 10, cacheRead: 0, cacheWrite: 0, total: 30 }, cost: 0.02 },
+      total: { tokens: { input: 30, output: 15, cacheRead: 2, cacheWrite: 0, total: 47 }, cost: 0.03 },
+      childRuns: 1,
+      childUsagePending: false,
+      children: [{ role: "qa-reviewer", tokens: { input: 20, output: 10, cacheRead: 0, cacheWrite: 0, total: 30 }, cost: 0.02, hasUsage: true }],
+    };
+
+    expect(normalizeMessage({ role: "assistant", content: "answer", roundUsage })).toEqual([
+      { role: "assistant", parts: [{ type: "text", text: "answer" }, { type: "roundUsage", usage: roundUsage }] },
+    ]);
+  });
+
+  it("renders optimistic attachment summaries from message metadata", () => {
+    expect(normalizeMessage({
+      role: "user",
+      content: "Review this",
+      attachments: [{ filename: "screen.png", kind: "image", mime: "image/png", size: 20, status: "metadata-only", warnings: ["metadata only"] }],
+    })).toEqual([
+      { role: "user", parts: [
+        { type: "text", text: "Review this" },
+        { type: "attachmentSummary", attachments: [{ filename: "screen.png", kind: "image", mime: "image/png", size: 20, status: "metadata-only", warnings: ["metadata only"] }] },
+      ] },
+    ]);
+  });
 });
 
 describe("appendText", () => {

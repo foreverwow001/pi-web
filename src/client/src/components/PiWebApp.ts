@@ -21,7 +21,6 @@ import { SessionStorageWorkspaceSelectionMemory } from "../controllers/workspace
 import { KeyboardShortcutDispatcher } from "../keyboardShortcuts";
 import { selectedMachineId } from "../controllers/types";
 import { sessionCleanupRequestKey, sessionCleanupUnavailableMessage } from "../sessionCleanupUi";
-import { hasAuthoritativeSessionPersistence as runtimeHasAuthoritativeSessionPersistence } from "../sessionPersistence";
 import { RealtimeSocket } from "../sessionSocket";
 import type { PiWebPluginRegistration, PluginMachine, PluginPromptEditor, QualifiedContributionId, QualifiedThemeContribution, QualifiedThemePairContribution, QualifiedWorkspacePanelContribution, PluginRuntimeContext, TerminalCommandRunsInternalRuntime, WorkspaceFiles, WorkspaceHost, WorkspaceLabelContext, WorkspaceLabelItem, WorkspacePanelContext } from "../plugins/types";
 import { CLASSIC_THEME_ID, DEFAULT_THEME_PREFERENCE, applyPiWebTheme, findThemePairForTheme, readStoredThemePreference, resolveThemePreference, writeStoredThemePreference, type ThemePreference, type ThemePreferenceResolution } from "../theme";
@@ -31,7 +30,6 @@ import { loadExternalPlugins } from "../plugins/external";
 import { PluginRegistry, installPluginRuntimeScope, installWorkspacePanelScope } from "../plugins/registry";
 import { queryNamespace, readNamespacedString, setNamespacedQueryKey } from "../namespacedQueryArgs";
 import { AppShellController } from "../appShell/appShellController";
-import { BrowserResumeController } from "../appShell/browserResumeController";
 import { NavigationSectionsController, type NavigationSection } from "../appShell/navigationState";
 import { PanelCollapseController, mainViewClass } from "../appShell/panelCollapseController";
 import { PanelResizeController, type PanelResizeConstraints, type ResizablePanelSide } from "../appShell/panelResizeController";
@@ -69,6 +67,7 @@ import { appStyles } from "./shared";
 
 
 const PI_WEB_STATUS_REFRESH_MS = 15 * 60 * 1000;
+const SELECTED_SESSION_STATUS_CATCHUP_MS = 10 * 1000;
 const PI_WEB_STATUS_DEFER_MS = 750;
 const REMOTE_ROUTE_RESTORE_RETRY_DELAYS_MS = [1_000, 3_000, 8_000, 15_000, 30_000] as const;
 const GLOBAL_SHORTCUT_LISTENER_OPTIONS = { capture: true } as const;
@@ -155,11 +154,6 @@ export class PiWebApp extends LitElement {
   private readonly machineNavigation = new SessionStorageMachineNavigationMemory();
   private readonly terminalSelection = new SessionStorageTerminalSelectionMemory();
   private readonly appShell = new AppShellController(this);
-  private readonly browserResume = new BrowserResumeController({
-    onResumeSignal: () => { this.handleBrowserResumeSignal(); },
-    refreshAfterResume: () => this.refreshAfterBrowserResume(),
-    onRefreshError: (error) => { console.warn("Failed to refresh after browser resume", error); },
-  });
   private readonly panelCollapse = new PanelCollapseController(this);
   private readonly panelResize = new PanelResizeController(this);
   private readonly navigationSections = new NavigationSectionsController(
@@ -172,6 +166,7 @@ export class PiWebApp extends LitElement {
   private piWebStatusTimer: number | undefined;
   private piWebStatusDeferredTimer: number | undefined;
   private workspaceDeletionPollTimer: number | undefined;
+  private selectedSessionStatusCatchupTimer: number | undefined;
   private refreshingWorkspaceDeletionRuns = false;
   private readonly handledWorkspaceDeletionRunIds = new Set<string>();
   private readonly terminalCommandRunRuntimes = new Map<string, TerminalCommandRunsInternalRuntime>();
@@ -203,6 +198,24 @@ export class PiWebApp extends LitElement {
     this.appShell.repairViewportPosition();
     this.retryPendingRemoteRouteRestoreSoon();
   };
+  private readonly onFocus = () => {
+    this.appShell.repairViewportPosition();
+    void this.sessions.refreshSelectedSession();
+    this.schedulePiWebStatusRefresh();
+    void this.refreshMachineActivities();
+    void this.refreshWorkspaceDeletionRuns();
+    this.retryPendingRemoteRouteRestoreSoon();
+  };
+  private readonly onVisibilityChange = () => {
+    if (document.visibilityState === "visible") {
+      this.appShell.repairViewportPosition();
+      void this.sessions.refreshSelectedSession();
+      this.schedulePiWebStatusRefresh();
+      void this.refreshMachineActivities();
+      void this.refreshWorkspaceDeletionRuns();
+      this.retryPendingRemoteRouteRestoreSoon();
+    }
+  };
   private readonly onSystemLightThemeChange = () => {
     if (this.themePreference.auto) this.applyPreferredTheme(false);
   };
@@ -226,12 +239,14 @@ export class PiWebApp extends LitElement {
     super.connectedCallback();
     window.addEventListener("popstate", this.onPopState);
     window.addEventListener("pageshow", this.onPageShow);
-    this.browserResume.connect();
+    window.addEventListener("focus", this.onFocus);
+    document.addEventListener("visibilitychange", this.onVisibilityChange);
     window.addEventListener("keydown", this.onKeyDown, GLOBAL_SHORTCUT_LISTENER_OPTIONS);
     this.systemLightThemeMedia?.addEventListener("change", this.onSystemLightThemeChange);
     this.applyPreferredTheme(false);
     this.connectRealtime();
     this.piWebStatusTimer = window.setInterval(() => { this.schedulePiWebStatusRefresh(); }, PI_WEB_STATUS_REFRESH_MS);
+    this.selectedSessionStatusCatchupTimer = window.setInterval(() => { void this.sessions.refreshSelectedSessionStatus(); }, SELECTED_SESSION_STATUS_CATCHUP_MS);
     void this.refreshWorkspaceActivity();
     void this.loadClientConfig();
     void this.ensureGatewayPluginsLoaded();
@@ -241,7 +256,8 @@ export class PiWebApp extends LitElement {
   override disconnectedCallback(): void {
     window.removeEventListener("popstate", this.onPopState);
     window.removeEventListener("pageshow", this.onPageShow);
-    this.browserResume.disconnect();
+    window.removeEventListener("focus", this.onFocus);
+    document.removeEventListener("visibilitychange", this.onVisibilityChange);
     window.removeEventListener("keydown", this.onKeyDown, GLOBAL_SHORTCUT_LISTENER_OPTIONS);
     this.systemLightThemeMedia?.removeEventListener("change", this.onSystemLightThemeChange);
     this.keyboard.reset();
@@ -252,6 +268,8 @@ export class PiWebApp extends LitElement {
     this.git.dispose();
     if (this.piWebStatusTimer !== undefined) window.clearInterval(this.piWebStatusTimer);
     this.piWebStatusTimer = undefined;
+    if (this.selectedSessionStatusCatchupTimer !== undefined) window.clearInterval(this.selectedSessionStatusCatchupTimer);
+    this.selectedSessionStatusCatchupTimer = undefined;
     this.clearScheduledPiWebStatusRefresh();
     if (this.workspaceDeletionPollTimer !== undefined) window.clearInterval(this.workspaceDeletionPollTimer);
     this.workspaceDeletionPollTimer = undefined;
@@ -284,20 +302,6 @@ export class PiWebApp extends LitElement {
       this.rememberCurrentMachineNavigation();
     }
     await this.refreshWorkspaceDeletionRuns();
-  }
-
-  private handleBrowserResumeSignal(): void {
-    this.appShell.repairViewportPosition();
-    this.schedulePiWebStatusRefresh();
-    this.retryPendingRemoteRouteRestoreSoon();
-  }
-
-  private async refreshAfterBrowserResume(): Promise<void> {
-    await Promise.all([
-      this.sessions.refreshSelectedSession(),
-      this.refreshMachineActivities(),
-      this.refreshWorkspaceDeletionRuns(),
-    ]);
   }
 
   private schedulePiWebStatusRefresh(delayMs = PI_WEB_STATUS_DEFER_MS): void {
@@ -587,7 +591,8 @@ export class PiWebApp extends LitElement {
   }
 
   private async withChatScrollTransition(action: () => Promise<void>, shouldComplete: () => boolean = () => true) {
-    this.chatView?.saveScrollPosition();
+    const previousSessionId = this.state.selectedSession?.id;
+    if (previousSessionId !== undefined) this.chatView?.saveScrollPosition();
     await action();
     if (!shouldComplete()) return;
     await this.updateComplete;
@@ -596,7 +601,8 @@ export class PiWebApp extends LitElement {
     if (!shouldComplete()) return;
     await nextFrame();
     if (!shouldComplete()) return;
-    this.chatView?.restoreScrollPosition();
+    const currentSessionId = this.state.selectedSession?.id;
+    if (previousSessionId !== undefined && previousSessionId === currentSessionId) this.chatView?.restoreScrollPosition();
     if (this.shouldAutoFocusPrompt()) this.promptEditor?.focusInput();
   }
 
@@ -1012,10 +1018,7 @@ export class PiWebApp extends LitElement {
 
   private canDeleteArchivedSessions(): boolean {
     const runtime = this.selectedMachineRuntime();
-    // COMPAT-CAP sessions.deleteArchived: older federated machines may support
-    // the legacy DELETE route without advertising runtime capabilities. Only
-    // block when capability discovery succeeds and reports no support.
-    return runtime?.ok !== true || supportsPiWebCapability(runtime, PI_WEB_CAPABILITIES.sessionsDeleteArchived);
+    return runtime?.ok === true && supportsPiWebCapability(runtime, PI_WEB_CAPABILITIES.sessionsDeleteArchived);
   }
 
   private canReloadSessions(): boolean {
@@ -1031,10 +1034,6 @@ export class PiWebApp extends LitElement {
   private canCleanupSessions(): boolean {
     const runtime = this.selectedMachineRuntime();
     return runtime?.ok === true && supportsPiWebCapability(runtime, PI_WEB_CAPABILITIES.sessionsCleanup);
-  }
-
-  private hasAuthoritativeSessionPersistence(): boolean {
-    return runtimeHasAuthoritativeSessionPersistence(this.selectedMachineRuntime());
   }
 
   private supportsWorkspaceFileSuggestions(machineId = selectedMachineId(this.state)): boolean {
@@ -1132,7 +1131,6 @@ export class PiWebApp extends LitElement {
         .canDeleteArchivedSessions=${this.canDeleteArchivedSessions()}
         .canReloadSessions=${this.canReloadSessions()}
         .canCleanupSessions=${this.canCleanupSessions()}
-        .authoritativeSessionPersistence=${this.hasAuthoritativeSessionPersistence()}
         .archivedDeleteUnavailableMessage=${this.archivedDeleteUnavailableMessage()}
         .cleanupUnavailableMessage=${this.sessionCleanupUnavailableMessage()}
         .collapsible=${true}
@@ -1886,9 +1884,13 @@ export class PiWebApp extends LitElement {
     void this.openThinkingDialog();
   };
 
+  private continueFromLastToolResult(): void {
+    this.sendPrompt("請從上一個 tool result 之後繼續 formal /dev workflow；不要重跑已完成步驟，先確認目前停在哪個 stage，然後繼續下一步。");
+  }
+
   private renderChatView(state: AppState, session: SessionInfo) {
     return html`
-      <chat-view .sessionId=${session.id} .messages=${state.messages} .messageStart=${state.messagePageStart} .messageEnd=${state.messagePageEnd} .messageTotal=${state.messagePageTotal} .hasMore=${state.messagePageStart > 0} .loadingMore=${state.isLoadingEarlierMessages} .isSendingPrompt=${state.sendingPrompts[session.id] === true} .isCompacting=${state.status?.isCompacting === true} .pendingMessageCount=${state.status?.pendingMessageCount ?? 0} .clientQueuedMessages=${state.clientQueuedSessionMessages[session.id] ?? []} .status=${state.status} .activity=${state.activity} .canClearServerQueue=${this.canClearServerQueue()} .onClearServerQueue=${this.handleClearServerQueue} .onDismissWarning=${this.handleDismissWarning} .onLoadMore=${() => this.withChatPrependTransition(() => this.sessions.loadEarlierMessages())}></chat-view>
+      <chat-view .sessionId=${session.id} .messages=${state.messages} .messageStart=${state.messagePageStart} .messageEnd=${state.messagePageEnd} .messageTotal=${state.messagePageTotal} .hasMore=${state.messagePageStart > 0} .loadingMore=${state.isLoadingEarlierMessages} .isSendingPrompt=${state.sendingPrompts[session.id] === true} .isCompacting=${state.status?.isCompacting === true} .pendingMessageCount=${state.status?.pendingMessageCount ?? 0} .clientQueuedMessages=${state.clientQueuedSessionMessages[session.id] ?? []} .status=${state.status} .activity=${state.activity} .canClearServerQueue=${this.canClearServerQueue()} .onClearServerQueue=${this.handleClearServerQueue} .onDismissWarning=${this.handleDismissWarning} .onContinueFromLastToolResult=${() => { this.continueFromLastToolResult(); }} .onLoadMore=${() => this.withChatPrependTransition(() => this.sessions.loadEarlierMessages())}></chat-view>
     `;
   }
 

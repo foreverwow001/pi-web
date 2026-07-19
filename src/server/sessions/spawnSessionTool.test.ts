@@ -36,6 +36,15 @@ describe("createSpawnSessionToolDefinition", () => {
     expect(spawn).toHaveBeenCalledWith({ spawningCwd: "/repos/a", prompt: "continue", cwd: undefined });
   });
 
+  it("omits the inherited model when the dispatching session has no current model", async () => {
+    const spawn = vi.fn(() => Promise.resolve({ sessionId: "new-3", cwd: "/repos/a" }));
+    const tool = createSpawnSessionToolDefinition("/repos/a", { spawn });
+
+    await tool.execute("call-3", { prompt: "continue" }, undefined, undefined, ctx);
+
+    expect(spawn).toHaveBeenCalledWith({ spawningCwd: "/repos/a", prompt: "continue", cwd: undefined });
+  });
+
   it("propagates the spawn callback error so the agent loop reports it", async () => {
     const spawn = vi.fn(() => Promise.reject(new Error("cwd must be a workspace of this project. Allowed: /repos/a")));
     const tool = createSpawnSessionToolDefinition("/repos/a", { spawn });

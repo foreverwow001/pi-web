@@ -3,6 +3,7 @@ import type { SessionBulkMutationRequest, SessionBulkMutationRef, SessionCleanup
 import { projectBrowserMessageResponse } from "../browserMessageProjection.js";
 import { normalizeRequestCwd } from "../workingDirectory.js";
 import type { SessionEventHub } from "../realtime/sessionEventHub.js";
+import { SessionHistoryConflictError } from "./piSessionService.js";
 import type { SessionRouteLookup, SessionRouteService } from "./sessionService.js";
 import { normalizeSessionCleanupRequest } from "./sessionCleanup.js";
 
@@ -238,6 +239,25 @@ export function registerSessionRoutes(app: FastifyInstance, sessions: SessionRou
     }
   });
 
+  app.get<{ Params: { sessionId: string }; Querystring: SessionQuery }>(`${prefix}/sessions/:sessionId/extension-ui/pending`, async (request, reply) => {
+    try {
+      if (sessions.listExtensionUiPending === undefined) throw new Error("Extension UI is not available");
+      return await sessions.listExtensionUiPending(sessionLookupFromQuery(request.params.sessionId, request.query));
+    } catch (error) {
+      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post<{ Params: { sessionId: string }; Body: { cwd?: unknown; requestId: string; value?: unknown; confirmed?: unknown; cancelled?: unknown } }>(`${prefix}/sessions/:sessionId/extension-ui/respond`, async (request, reply) => {
+    try {
+      const body = optionalRecord(request.body);
+      if (sessions.respondExtensionUi === undefined) throw new Error("Extension UI is not available");
+      return await sessions.respondExtensionUi(sessionLookupFromBody(request.params.sessionId, body), requireString(body, "requestId"), request.body);
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.post<{ Params: { sessionId: string }; Body: { cwd?: unknown } | undefined }>(`${prefix}/sessions/:sessionId/abort`, async (request, reply) => {
     try {
       await sessions.abort(sessionLookupFromBody(request.params.sessionId, optionalRecord(request.body)));
@@ -393,7 +413,8 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function mutationErrorStatus(error: unknown): 400 | 404 {
+function mutationErrorStatus(error: unknown): 400 | 404 | 409 {
+  if (error instanceof SessionHistoryConflictError) return 409;
   return isSessionNotFoundError(error) ? 404 : 400;
 }
 
