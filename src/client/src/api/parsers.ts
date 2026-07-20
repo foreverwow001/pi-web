@@ -1067,7 +1067,10 @@ export function parseIvyhouseFooterControlsResponse(value: unknown): IvyhouseFoo
   const record = requireRecord(value);
   return {
     cwd: requireString(record, "cwd"),
+    ...optionalField("sessionId", optionalString(record, "sessionId")),
     mode: requireFooterMode(record, "mode"),
+    effectiveMode: requireFooterMode(record, "effectiveMode"),
+    requestedEffectiveMismatch: requireBoolean(record, "requestedEffectiveMismatch"),
     fastOverride: requireFastOverride(record, "fastOverride"),
     fastEnabled: requireBoolean(record, "fastEnabled"),
     stateFile: requireString(record, "stateFile"),

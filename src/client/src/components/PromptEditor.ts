@@ -34,6 +34,16 @@ export function shouldUseMobileEnterNewline(matchMedia: (query: string) => Pick<
   return MOBILE_ENTER_NEWLINE_QUERIES.some((query) => matchMedia(query).matches);
 }
 
+export type PromptSendHandler = (text: string, streamingBehavior?: "steer" | "followUp", attachments?: PromptAttachmentPayload[]) => void;
+
+export function promptSendArguments(
+  text: string,
+  streamingBehavior: "steer" | "followUp" | undefined,
+  attachments: PromptAttachmentPayload[],
+): Parameters<PromptSendHandler> {
+  return [text, streamingBehavior, attachments];
+}
+
 @customElement("prompt-editor")
 export class PromptEditor extends LitElement {
   @property({ type: Boolean }) disabled = false;
@@ -48,7 +58,7 @@ export class PromptEditor extends LitElement {
   @property({ type: Boolean }) canStop = false;
   @property({ attribute: false }) status?: SessionStatus;
   @property({ type: Boolean }) sending = false;
-  @property({ attribute: false }) onSend?: (text: string, attachments?: PromptAttachmentPayload[], streamingBehavior?: "steer" | "followUp") => void;
+  @property({ attribute: false }) onSend?: PromptSendHandler;
   @property({ attribute: false }) onStop?: () => void;
   @property({ attribute: false }) onSelectModel?: () => void;
   @property({ attribute: false }) onSelectThinking?: () => void;
@@ -87,7 +97,7 @@ export class PromptEditor extends LitElement {
   protected override updated(changed: PropertyValues) {
     if (changed.has("disabled")) this.updateEditorDisabledState();
     if (changed.has("draft") || changed.has("sessionId") || changed.has("machineId")) this.syncEditorDoc();
-    if (changed.has("cwd")) void this.refreshFooterControls();
+    if (changed.has("cwd") || changed.has("sessionId")) void this.refreshFooterControls();
   }
 
   override disconnectedCallback(): void {
@@ -142,13 +152,19 @@ export class PromptEditor extends LitElement {
     if (status === undefined) return null;
     const model = status.model?.id ?? "no model";
     const provider = status.model?.provider !== undefined && status.model.provider !== "" ? `${status.model.provider}/` : "";
+    const requestedMode = this.footerControls?.mode ?? "default";
+    const effectiveMode = this.footerControls?.effectiveMode ?? "default";
+    const modeTitle = this.footerControls?.requestedEffectiveMismatch === true
+      ? `Requested ${requestedMode}; effective ${effectiveMode} until the next agent run applies the request`
+      : `Mode ${requestedMode} is effective`;
     return html`
       <div class="compact-status status-primary" aria-label="Session mode and model">
-        <select class="select-mode" title="Select mode" .value=${this.footerControls?.mode ?? "default"} ?disabled=${this.disabled || this.cwd === undefined || this.cwd === ""} @change=${(event: Event) => { this.setFooterModeFromEvent(event); }}>
+        <select class="select-mode" title=${modeTitle} .value=${requestedMode} ?disabled=${this.disabled || this.cwd === undefined || this.cwd === "" || this.sessionId === undefined || this.sessionId === ""} @change=${(event: Event) => { this.setFooterModeFromEvent(event); }}>
           <option value="default">mode: default</option>
           <option value="build">mode: build</option>
           <option value="plan">mode: plan</option>
         </select>
+        ${this.footerControls?.requestedEffectiveMismatch === true ? html`<span class="mode-effective-warning" title=${modeTitle}>effective: ${effectiveMode}</span>` : null}
         <button class="select-model" title="Select model" @click=${() => this.onSelectModel?.()}>${provider}${model}</button>
       </div>
       <div class="compact-status status-secondary" aria-label="Session thinking and fast mode">
@@ -352,11 +368,11 @@ export class PromptEditor extends LitElement {
   }
 
   private async refreshFooterControls(): Promise<void> {
-    if (this.cwd === undefined || this.cwd === "") {
+    if (this.cwd === undefined || this.cwd === "" || this.sessionId === undefined || this.sessionId === "") {
       this.footerControls = undefined;
       return;
     }
-    this.footerControls = await api.footerControls(this.cwd).catch(() => this.footerControls);
+    this.footerControls = await api.footerControls(this.cwd, this.sessionId).catch(() => this.footerControls);
   }
 
   private setFooterModeFromEvent(event: Event): void {
@@ -366,10 +382,10 @@ export class PromptEditor extends LitElement {
   }
 
   private async setFooterMode(value: string): Promise<void> {
-    if (this.cwd === undefined || this.cwd === "") return;
+    if (this.cwd === undefined || this.cwd === "" || this.sessionId === undefined || this.sessionId === "") return;
     const mode = footerModeFromString(value);
     if (mode === undefined) return;
-    this.footerControls = await api.setFooterMode(this.cwd, mode).catch(() => this.footerControls);
+    this.footerControls = await api.setFooterMode(this.cwd, this.sessionId, mode).catch(() => this.footerControls);
   }
 
   private async toggleFast(): Promise<void> {
@@ -477,7 +493,7 @@ export class PromptEditor extends LitElement {
     const key = draftStorageKey(this.machineId, this.sessionId);
     if (key !== undefined) clearDraft(key);
     this.completions = [];
-    this.onSend?.(text, attachments, this.canSteer || this.isCompacting ? streamingBehavior : undefined);
+    this.onSend?.(...promptSendArguments(text, this.canSteer || this.isCompacting ? streamingBehavior : undefined, attachments));
   }
 
   static override styles = promptEditorStyles;

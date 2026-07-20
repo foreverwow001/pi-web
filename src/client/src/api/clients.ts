@@ -162,14 +162,17 @@ export const activityApi = {
   workspaceActivity: (machineId = "local") => request(`${machinePrefix(machineId)}/activity`, parseWorkspaceActivityResponse),
 };
 
-function cwdQuery(cwd: string | undefined): string {
-  if (cwd === undefined || cwd === "") return "";
-  return `?${new URLSearchParams({ cwd }).toString()}`;
+function footerControlsQuery(cwd: string | undefined, sessionId: string | undefined): string {
+  const params = new URLSearchParams();
+  if (cwd !== undefined && cwd !== "") params.set("cwd", cwd);
+  if (sessionId !== undefined && sessionId !== "") params.set("sessionId", sessionId);
+  const query = params.toString();
+  return query === "" ? "" : `?${query}`;
 }
 
 export const ivyhouseApi = {
-  footerControls: (cwd?: string) => request(`/api/ivyhouse/footer-controls${cwdQuery(cwd)}`, parseIvyhouseFooterControlsResponse),
-  setFooterMode: (cwd: string, mode: IvyhouseFooterMode) => request("/api/ivyhouse/footer-controls/mode", parseIvyhouseFooterControlsResponse, { method: "POST", body: JSON.stringify({ cwd, mode }) }),
+  footerControls: (cwd?: string, sessionId?: string) => request(`/api/ivyhouse/footer-controls${footerControlsQuery(cwd, sessionId)}`, parseIvyhouseFooterControlsResponse),
+  setFooterMode: (cwd: string, sessionId: string, mode: IvyhouseFooterMode) => request("/api/ivyhouse/footer-controls/mode", parseIvyhouseFooterControlsResponse, { method: "POST", body: JSON.stringify({ cwd, sessionId, mode }) }),
   toggleFast: (cwd: string) => request("/api/ivyhouse/footer-controls/fast/toggle", parseIvyhouseFooterControlsResponse, { method: "POST", body: JSON.stringify({ cwd }) }),
 };
 

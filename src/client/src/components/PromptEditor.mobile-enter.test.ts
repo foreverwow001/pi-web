@@ -1,5 +1,29 @@
 import { describe, expect, it } from "vitest";
-import { shouldUseMobileEnterNewline } from "./PromptEditor";
+import { promptSendArguments, shouldUseMobileEnterNewline } from "./PromptEditor";
+import type { PromptAttachmentPayload } from "../../../shared/promptAttachments";
+
+describe("PromptEditor prompt send contract", () => {
+  const attachment: PromptAttachmentPayload = {
+    id: "attachment-1",
+    kind: "text",
+    filename: "note.txt",
+    extension: ".txt",
+    mime: "text/plain",
+    size: 4,
+    source: "drop",
+    warnings: [],
+    text: "note",
+    extractionStatus: "ready",
+  };
+
+  it.each([
+    [undefined, []],
+    ["followUp" as const, []],
+    ["steer" as const, [attachment]],
+  ])("keeps streamingBehavior before attachments (%s)", (streamingBehavior, attachments) => {
+    expect(promptSendArguments("hello", streamingBehavior, attachments)).toEqual(["hello", streamingBehavior, attachments]);
+  });
+});
 
 describe("PromptEditor mobile Enter behavior", () => {
   it("uses newline mode on coarse pointer / touch devices", () => {

@@ -99,10 +99,10 @@ describe("PromptEditor attachment wiring", () => {
 
     invokePromptEditorPrivate(editor, "send");
     expect(onSend).toHaveBeenCalledTimes(1);
-    expect(onSend).toHaveBeenCalledWith("inspect attachments", [
+    expect(onSend).toHaveBeenCalledWith("inspect attachments", undefined, [
       expect.objectContaining({ kind: "image", filename: "shot.png", mime: "image/png", dataBase64: "cG5n", source: "paste", extractionStatus: "ready" }),
       expect.objectContaining({ kind: "document", filename: "report.pdf", mime: "application/pdf", dataBase64: "cGRm", source: "paste", extractionStatus: "ready" }),
-    ], undefined);
+    ]);
   });
 
   it("removes a pending attachment before sending the remaining attachments", () => {
@@ -119,9 +119,9 @@ describe("PromptEditor attachment wiring", () => {
     invokePromptEditorPrivate(editor, "send");
 
     expect(onSend).toHaveBeenCalledTimes(1);
-    expect(onSend).toHaveBeenCalledWith("please review", [
+    expect(onSend).toHaveBeenCalledWith("please review", undefined, [
       expect.objectContaining({ id: "attachment-2", kind: "image", filename: "shot.png" }),
-    ], undefined);
+    ]);
   });
 });
 

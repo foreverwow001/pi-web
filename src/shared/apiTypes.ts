@@ -362,7 +362,10 @@ export type IvyhouseFastOverride = "auto" | "on" | "off";
 
 export interface IvyhouseFooterControlsResponse {
   cwd: string;
+  sessionId?: string;
   mode: IvyhouseFooterMode;
+  effectiveMode: IvyhouseFooterMode;
+  requestedEffectiveMismatch: boolean;
   fastOverride: IvyhouseFastOverride;
   fastEnabled: boolean;
   stateFile: string;

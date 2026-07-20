@@ -16,7 +16,10 @@ type StatusKind = "ready" | "configured" | "failed" | "gated" | "disabled";
 
 interface IvyhouseFooterControlsResponse {
   cwd: string;
+  sessionId?: string;
   mode: IvyhouseFooterMode;
+  effectiveMode: IvyhouseFooterMode;
+  requestedEffectiveMismatch: boolean;
   fastOverride: IvyhouseFastOverride;
   fastEnabled: boolean;
   stateFile: string;
@@ -93,20 +96,22 @@ export function registerIvyhouseStatusPanelRoutes(app: FastifyInstance, daemon: 
     }
   });
 
-  app.get<{ Querystring: { cwd?: string } }>("/api/ivyhouse/footer-controls", async (request, reply) => {
+  app.get<{ Querystring: { cwd?: string; sessionId?: string } }>("/api/ivyhouse/footer-controls", async (request, reply) => {
     try {
-      return await readFooterControls(resolveCwd(request.query.cwd));
+      return await readFooterControls(resolveCwd(request.query.cwd), normalizeSessionId(request.query.sessionId));
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
     }
   });
 
-  app.post<{ Body: { cwd?: string; mode?: unknown } }>("/api/ivyhouse/footer-controls/mode", async (request, reply) => {
+  app.post<{ Body: { cwd?: string; sessionId?: string; mode?: unknown } }>("/api/ivyhouse/footer-controls/mode", async (request, reply) => {
     try {
       const cwd = resolveCwd(request.body.cwd);
+      const sessionId = normalizeSessionId(request.body.sessionId);
+      if (sessionId === undefined) throw new Error("sessionId is required for footer mode changes");
       const mode = normalizeFooterMode(request.body.mode);
-      await writeFooterControls(cwd, { agent: mode });
-      return await readFooterControls(cwd);
+      await writeFooterControls(cwd, { agent: mode, requestedAt: new Date().toISOString() }, sessionId);
+      return await readFooterControls(cwd, sessionId);
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -182,31 +187,62 @@ function normalizeSessionId(sessionId: string | undefined): string | undefined {
   return normalized.length > 0 && normalized.length <= 256 ? normalized : undefined;
 }
 
-function footerControlsStatePath(cwd: string): string {
-  return join(FOOTER_CONTROLS_STATE_DIR, `state-${cwdHash(cwd)}.json`);
+export function footerControlsStatePath(cwd: string, sessionId?: string, stateDir: string = FOOTER_CONTROLS_STATE_DIR): string {
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  const suffix = normalizedSessionId === undefined ? "" : `-${sessionHash(normalizedSessionId)}`;
+  return join(stateDir, `state-${cwdHash(cwd)}${suffix}.json`);
 }
 
-async function readFooterControls(cwd: string): Promise<IvyhouseFooterControlsResponse> {
-  const state = await readFooterControlsState(cwd);
+export async function readFooterControls(cwd: string, sessionId?: string, stateDir: string = FOOTER_CONTROLS_STATE_DIR): Promise<IvyhouseFooterControlsResponse> {
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  const state = await readFooterControlsState(cwd, normalizedSessionId, stateDir);
   const mode = normalizeFooterMode(state["agent"]);
+  const effectiveMode = normalizeFooterMode(state["effectiveAgent"]);
   const fastOverride = normalizeFastOverride(state["fastOverride"]);
   return {
     cwd,
+    ...(normalizedSessionId === undefined ? {} : { sessionId: normalizedSessionId }),
     mode,
+    effectiveMode,
+    requestedEffectiveMismatch: mode !== effectiveMode,
     fastOverride,
     fastEnabled: footerFastEnabled(cwd, fastOverride),
-    stateFile: footerControlsStatePath(cwd),
+    stateFile: footerControlsStatePath(cwd, normalizedSessionId, stateDir),
   };
 }
 
-async function readFooterControlsState(cwd: string): Promise<RecordValue> {
-  const parsed = await readJson(footerControlsStatePath(cwd));
-  return isRecord(parsed) ? parsed : { agent: "default", fastOverride: "auto" };
+export async function readFooterControlsState(cwd: string, sessionId?: string, stateDir: string = FOOTER_CONTROLS_STATE_DIR): Promise<RecordValue> {
+  const projectParsed = await readJson(footerControlsStatePath(cwd, undefined, stateDir));
+  const projectState = isRecord(projectParsed) ? projectParsed : {};
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  const sessionParsed = normalizedSessionId === undefined
+    ? undefined
+    : await readJson(footerControlsStatePath(cwd, normalizedSessionId, stateDir));
+  const sessionState = isRecord(sessionParsed) ? sessionParsed : {};
+  return {
+    agent: sessionState["agent"] === "build" || sessionState["agent"] === "plan" ? sessionState["agent"] : "default",
+    effectiveAgent: sessionState["effectiveAgent"] === "build" || sessionState["effectiveAgent"] === "plan" ? sessionState["effectiveAgent"] : "default",
+    fastOverride: normalizeFastOverride(projectState["fastOverride"]),
+  };
 }
 
-async function writeFooterControls(cwd: string, patch: RecordValue): Promise<void> {
-  const next = { ...await readFooterControlsState(cwd), ...patch };
-  await writeJson(footerControlsStatePath(cwd), next);
+export async function writeFooterControls(cwd: string, patch: RecordValue, sessionId?: string, stateDir: string = FOOTER_CONTROLS_STATE_DIR): Promise<void> {
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  if (patch["agent"] !== undefined || patch["effectiveAgent"] !== undefined) {
+    if (normalizedSessionId === undefined) throw new Error("sessionId is required for footer mode changes");
+    const sessionFile = footerControlsStatePath(cwd, normalizedSessionId, stateDir);
+    const current = await readJson(sessionFile);
+    await writeJson(sessionFile, {
+      ...(isRecord(current) ? current : {}),
+      ...(patch["agent"] === undefined ? {} : { agent: patch["agent"], requestedAt: patch["requestedAt"] }),
+      ...(patch["effectiveAgent"] === undefined ? {} : { effectiveAgent: patch["effectiveAgent"], effectiveAt: patch["effectiveAt"] }),
+    });
+  }
+  if (patch["fastOverride"] !== undefined) {
+    const projectFile = footerControlsStatePath(cwd, undefined, stateDir);
+    const current = await readJson(projectFile);
+    await writeJson(projectFile, { ...(isRecord(current) ? current : {}), fastOverride: patch["fastOverride"] });
+  }
 }
 
 function normalizeFooterMode(value: unknown): IvyhouseFooterMode {
