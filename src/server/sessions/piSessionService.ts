@@ -1249,9 +1249,12 @@ export class PiSessionService implements SessionRouteService {
     // the seq matches the partial the client seeds against.
     const seq = this.events.currentSeq(session.sessionId);
     const streamingMessage = session.state.streamingMessage;
-    const partial = streamingMessage === undefined || streamingMessage === null
+    const projected = streamingMessage === undefined || streamingMessage === null
       ? null
       : projectBrowserMessage(streamingMessage);
+    const partial = isRecord(projected)
+      ? { ...projected, ...assistantThinkingLevelMetadata(projected, session.thinkingLevel) }
+      : projected;
     return { seq, partial };
   }
 
@@ -2300,7 +2303,7 @@ export class PiSessionService implements SessionRouteService {
       }
     }
     active.unsubscribe = session.subscribe((event) => {
-      this.events.publish(session.sessionId, toClientEvent(event));
+      this.events.publish(session.sessionId, toClientEvent(event, session.thinkingLevel));
       this.publishActivityForEvent(session, event);
       const eventType = getString(event, "type");
       if (eventType === "message_end") this.recordAssistantMessageId(session, event);
@@ -3075,9 +3078,12 @@ function findLastAssistantMessageId(session: PiAgentSession): string | undefined
 
 function historyMessages(session: PiAgentSession): unknown[] {
   const messages: unknown[] = [];
+  let thinkingLevel: string | undefined;
   for (const entry of session.sessionManager.getBranch()) {
     if (!isRecord(entry)) continue;
-    if (entry["type"] === "message") messages.push(messageWithEntryMetadata(entry));
+    if (entry["type"] === "thinking_level_change") {
+      thinkingLevel = getString(entry, "thinkingLevel") ?? thinkingLevel;
+    } else if (entry["type"] === "message") messages.push(messageWithEntryMetadata(entry, thinkingLevel));
     else if (entry["type"] === "custom_message" && entry["display"] === true) messages.push({ role: "custom", content: entry["content"], customType: entry["customType"], details: entry["details"] });
     else if (entry["type"] === "compaction") messages.push({ role: "system", source: "compaction", content: `Compacted history:\n\n${stringValue(entry["summary"])}` });
     else if (entry["type"] === "branch_summary") messages.push({ role: "system", source: "branch_summary", content: `Branch summary:\n\n${stringValue(entry["summary"])}` });
@@ -3085,7 +3091,7 @@ function historyMessages(session: PiAgentSession): unknown[] {
   return messages;
 }
 
-function messageWithEntryMetadata(entry: Record<string, unknown>): unknown {
+function messageWithEntryMetadata(entry: Record<string, unknown>, thinkingLevel?: string): unknown {
   const message = getProperty(entry, "message");
   if (!isRecord(message)) return message;
   const id = getString(entry, "id");
@@ -3094,7 +3100,14 @@ function messageWithEntryMetadata(entry: Record<string, unknown>): unknown {
     ...message,
     ...(id === undefined || getString(message, "id") !== undefined ? {} : { id }),
     ...(timestamp === undefined || getProperty(message, "timestamp") !== undefined ? {} : { timestamp }),
+    ...assistantThinkingLevelMetadata(message, thinkingLevel),
   };
+}
+
+function assistantThinkingLevelMetadata(message: Record<string, unknown>, fallback?: string): { thinkingLevel?: string } {
+  if (getString(message, "role") !== "assistant") return {};
+  const thinkingLevel = getString(message, "thinkingLevel") ?? fallback;
+  return thinkingLevel === undefined || thinkingLevel === "" ? {} : { thinkingLevel };
 }
 
 function attachRoundUsage(messages: unknown[], usageByMessageId: Map<string, RoundUsageSnapshot>): unknown[] {
@@ -3144,7 +3157,7 @@ function finalAssistantText(messages: readonly unknown[]): string {
   return "";
 }
 
-function toClientEvent(event: unknown): SessionUiEvent {
+function toClientEvent(event: unknown, thinkingLevel?: string): SessionUiEvent {
   const eventType = getString(event, "type");
   const assistantMessageEvent = getProperty(event, "assistantMessageEvent");
   if (eventType === "message_update" && getString(assistantMessageEvent, "type") === "text_delta") {
@@ -3169,7 +3182,11 @@ function toClientEvent(event: unknown): SessionUiEvent {
   if (eventType === "agent_end") return { type: "agent.end" };
   if (eventType === "message_end") {
     const message = getProperty(event, "message");
-    return message === undefined ? { type: "message.end" } : { type: "message.end", message };
+    if (message === undefined) return { type: "message.end" };
+    return {
+      type: "message.end",
+      message: isRecord(message) ? { ...message, ...assistantThinkingLevelMetadata(message, thinkingLevel) } : message,
+    };
   }
   return { type: "pi.event", eventType: eventType ?? "unknown" };
 }

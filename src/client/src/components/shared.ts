@@ -41,6 +41,7 @@ export interface ChatLine {
   meta?: {
     timestamp?: string;
     model?: { provider?: string; id?: string; responseId?: string };
+    thinkingLevel?: string;
   };
 }
 

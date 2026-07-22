@@ -20,6 +20,25 @@ describe("chat message normalization", () => {
     expect(normalizeMessages([{ role: "user", content: "raw" }, line])).toEqual([textMessage("user", "raw"), line]);
   });
 
+  it("preserves an assistant message's effective thinking level as metadata", () => {
+    expect(normalizeMessage({
+      role: "assistant",
+      content: "answer",
+      timestamp: "2026-07-21T00:00:00.000Z",
+      provider: "openai-codex-2",
+      model: "gpt-5.6-sol",
+      thinkingLevel: "high",
+    })).toEqual([{
+      role: "assistant",
+      parts: [{ type: "text", text: "answer" }],
+      meta: {
+        timestamp: "2026-07-21T00:00:00.000Z",
+        model: { provider: "openai-codex-2", id: "gpt-5.6-sol" },
+        thinkingLevel: "high",
+      },
+    }]);
+  });
+
   it("normalizes tool calls and tool results", () => {
     expect(normalizeMessage({ role: "assistant", content: [{ type: "toolCall", name: "bash", arguments: { command: "npm test" } }] })).toEqual([
       { role: "assistant", parts: [{ type: "toolCall", toolName: "bash", summary: "npm test", args: { command: "npm test" } }] },

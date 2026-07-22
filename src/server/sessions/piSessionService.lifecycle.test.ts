@@ -52,6 +52,50 @@ describe("PiSessionService lifecycle, listing, and reload", () => {
     expect(fake.calls.dispose).toBe(1);
   });
 
+  it("preserves the effective thinking level for each historical and realtime assistant message", async () => {
+    const sessionId = "thinking-metadata-session";
+    const branch = [
+      { type: "message", id: "legacy", timestamp: "2026-07-21T00:00:00.000Z", message: { role: "assistant", content: "legacy" } },
+      { type: "thinking_level_change", thinkingLevel: "high" },
+      { type: "message", id: "high", timestamp: "2026-07-21T00:01:00.000Z", message: { role: "assistant", content: "high answer" } },
+      { type: "thinking_level_change", thinkingLevel: "low" },
+      { type: "message", id: "low", timestamp: "2026-07-21T00:02:00.000Z", message: { role: "assistant", content: "low answer" } },
+    ];
+    const hub = new CapturingSessionEventHub();
+    const fake = fakeRuntime(sessionId, {
+      thinkingLevel: "low",
+      sessionManager: fakeSessionManager("/workspace", {
+        getSessionId: () => sessionId,
+        getBranch: () => branch,
+      }),
+    });
+    const service = new PiSessionService(hub, {
+      agentDir: TEST_AGENT_DIR,
+      modelRuntime: testModelRuntime,
+      createAgentRuntime: runtimeCreator(fake.runtime),
+      sessionManager: sessionGateway([]),
+      heartbeatIntervalMs: 60_000,
+    });
+
+    await service.start("/workspace");
+    const messages = await service.messages(sessionRef(sessionId));
+    expect(messages).toEqual([
+      expect.objectContaining({ role: "assistant", content: "legacy" }),
+      expect.objectContaining({ role: "assistant", content: "high answer", thinkingLevel: "high" }),
+      expect.objectContaining({ role: "assistant", content: "low answer", thinkingLevel: "low" }),
+    ]);
+    if (!Array.isArray(messages)) throw new Error("expected an unpaged message list");
+    expect(messages[0]).not.toHaveProperty("thinkingLevel");
+
+    fake.emit({ type: "message_end", message: { role: "assistant", content: "live answer" } });
+    expect(hub.sessionEvents.filter(({ event }) => event.type === "message.end").at(-1)?.event).toEqual({
+      type: "message.end",
+      message: { role: "assistant", content: "live answer", thinkingLevel: "low" },
+    });
+
+    await service.dispose();
+  });
+
   it("reports persistence from actual session-file existence for fresh active sessions", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pi-web-persisted-"));
     const sessionFile = join(dir, "new-session.jsonl");
@@ -656,7 +700,7 @@ describe("PiSessionService.streamSnapshot", () => {
         { type: "toolCall", id: "call-1", name: "edit", arguments: { path: "a.ts" } },
       ],
     };
-    const fake = fakeRuntime("snap-live", { state: { streamingMessage } });
+    const fake = fakeRuntime("snap-live", { state: { streamingMessage }, thinkingLevel: "high" });
     const service = new PiSessionService(hub, {
       agentDir: TEST_AGENT_DIR,
       modelRuntime: testModelRuntime,
@@ -674,6 +718,7 @@ describe("PiSessionService.streamSnapshot", () => {
       expect(snapshot.seq).toBe(5);
       expect(snapshot.partial).toEqual({
         role: "assistant",
+        thinkingLevel: "high",
         content: [
           { type: "thinking", thinking: "weighing options" },
           { type: "text", text: "partial answer" },

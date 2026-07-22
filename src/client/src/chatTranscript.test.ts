@@ -13,6 +13,7 @@ const finalAssistant = {
   timestamp: "2026-05-09T12:00:00.000Z",
   provider: "test",
   model: "model",
+  thinkingLevel: "high",
 };
 
 describe("applyTranscriptEvent", () => {
@@ -38,7 +39,7 @@ describe("applyTranscriptEvent", () => {
       {
         role: "assistant",
         parts: [{ type: "thinking", text: "plan" }, { type: "text", text: "answer" }],
-        meta: { timestamp: "2026-05-09T12:00:00.000Z", model: { provider: "test", id: "model" } },
+        meta: { timestamp: "2026-05-09T12:00:00.000Z", model: { provider: "test", id: "model" }, thinkingLevel: "high" },
       },
     ]);
   });

@@ -127,7 +127,8 @@ export function chatMessageMetadataLabel(message: ChatLine): string {
   const timestamp = message.meta?.timestamp;
   const time = timestamp === undefined ? undefined : formatMessageTimestamp(timestamp);
   const model = chatMessageModelLabel(message);
-  const parts = [time, model].filter((part): part is string => part !== undefined && part !== "");
+  const thinking = chatMessageThinkingLabel(message);
+  const parts = [time, model, thinking].filter((part): part is string => part !== undefined && part !== "");
   return parts.length === 0 ? "No Pi message metadata available" : parts.join(" · ");
 }
 
@@ -143,6 +144,12 @@ function chatMessageModelLabel(message: ChatLine): string | undefined {
   const id = model.responseId ?? model.id;
   if (id === undefined || id === "") return model.provider;
   return model.provider !== undefined && model.provider !== "" ? `${model.provider}/${id}` : id;
+}
+
+function chatMessageThinkingLabel(message: ChatLine): string | undefined {
+  const thinkingLevel = message.meta?.thinkingLevel;
+  if (thinkingLevel !== undefined && thinkingLevel !== "") return `think: ${thinkingLevel}`;
+  return message.role === "assistant" ? "think: unknown" : undefined;
 }
 
 @customElement("chat-view")

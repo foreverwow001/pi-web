@@ -63,6 +63,20 @@ describe("chatQueuedSectionShowsClearAction", () => {
   });
 });
 
+describe("ChatView active workflow queue smoke", () => {
+  it("renders no queue section while the Coordinator is active with no queued follow-up", () => {
+    const view = new ChatView();
+    view.status = queuedStatus([]);
+    const queuedListRenders = observeQueuedMessageListRenders(view);
+
+    expect(view.status.isStreaming).toBe(true);
+    expect(view.status.pendingMessageCount).toBe(0);
+    renderQueuedMessages(view);
+
+    expect(queuedListRenders).toEqual([]);
+  });
+});
+
 describe("ChatView queued-message clear wiring", () => {
   // Escape hatch: this case verifies the Clear queue button's Lit event wiring,
   // whose only observable effect is invoking the injected callback. Vitest runs
@@ -142,15 +156,23 @@ describe("ChatView session-warning dismiss wiring", () => {
 });
 
 describe("chatMessageMetadataLabel", () => {
-  it("uses one full date and model label without a model prefix", () => {
+  it("shows the effective thinking level after the model", () => {
     const timestamp = "2026-07-10T19:15:30.000Z";
     const formattedTimestamp = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium" }).format(new Date(timestamp));
 
     expect(chatMessageMetadataLabel({
       role: "assistant",
       parts: [],
-      meta: { timestamp, model: { provider: "provider", id: "model" } },
-    })).toBe(`${formattedTimestamp} · provider/model`);
+      meta: { timestamp, model: { provider: "provider", id: "model" }, thinkingLevel: "high" },
+    })).toBe(`${formattedTimestamp} · provider/model · think: high`);
+  });
+
+  it("labels legacy assistant messages without thinking metadata as unknown", () => {
+    expect(chatMessageMetadataLabel({
+      role: "assistant",
+      parts: [],
+      meta: { model: { provider: "provider", id: "model" } },
+    })).toBe("provider/model · think: unknown");
   });
 });
 
@@ -229,6 +251,7 @@ interface GroupBodyRenderCall {
 }
 
 type RenderQueuedMessages = (this: ChatView) => TemplateResult;
+type RenderQueuedMessageList = (this: ChatView, section: unknown) => TemplateResult;
 type RenderMessageGroup = (this: ChatView, messages: ChatLine[], startIndex: number, endIndex: number, defaultOpen: boolean) => TemplateResult;
 type RenderMessageGroupBody = (this: ChatView, messages: ChatLine[], startIndex: number) => TemplateResult;
 type RenderWarnings = (this: ChatView) => TemplateResult | null;
@@ -238,6 +261,18 @@ function renderQueuedMessages(view: ChatView): TemplateResult {
   const method: unknown = Reflect.get(view, "renderQueuedMessages");
   if (!isRenderQueuedMessages(method)) throw new Error("ChatView.renderQueuedMessages is not callable");
   return method.call(view);
+}
+
+function observeQueuedMessageListRenders(view: ChatView): unknown[] {
+  const method: unknown = Reflect.get(view, "renderQueuedMessageList");
+  if (!isRenderQueuedMessageList(method)) throw new Error("ChatView.renderQueuedMessageList is not callable");
+  const calls: unknown[] = [];
+  const observed: RenderQueuedMessageList = function (section) {
+    calls.push(section);
+    return method.call(this, section);
+  };
+  if (!Reflect.set(view, "renderQueuedMessageList", observed)) throw new Error("Could not observe ChatView.renderQueuedMessageList");
+  return calls;
 }
 
 function renderMessageGroup(view: ChatView, messages: ChatLine[], startIndex: number, endIndex: number, defaultOpen: boolean): TemplateResult {
@@ -265,6 +300,10 @@ function observeGroupBodyRenders(view: ChatView): GroupBodyRenderCall[] {
 }
 
 function isRenderQueuedMessages(value: unknown): value is RenderQueuedMessages {
+  return typeof value === "function";
+}
+
+function isRenderQueuedMessageList(value: unknown): value is RenderQueuedMessageList {
   return typeof value === "function";
 }
 

@@ -104,8 +104,13 @@ function normalizeSource(message: unknown): ChatLine["source"] | undefined {
 function normalizeMeta(message: unknown): ChatLine["meta"] | undefined {
   const timestamp = normalizeTimestamp(getProperty(message, "timestamp"));
   const model = normalizeModel(message);
-  if (timestamp === undefined && model === undefined) return undefined;
-  return { ...(timestamp === undefined ? {} : { timestamp }), ...(model === undefined ? {} : { model }) };
+  const thinkingLevel = normalizeThinkingLevel(message);
+  if (timestamp === undefined && model === undefined && thinkingLevel === undefined) return undefined;
+  return {
+    ...(timestamp === undefined ? {} : { timestamp }),
+    ...(model === undefined ? {} : { model }),
+    ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+  };
 }
 
 function normalizeTimestamp(value: unknown): string | undefined {
@@ -126,6 +131,12 @@ function normalizeModel(message: unknown): NonNullable<ChatLine["meta"]>["model"
     ...(id === undefined || id === "" ? {} : { id }),
     ...(responseId === undefined || responseId === "" ? {} : { responseId }),
   };
+}
+
+function normalizeThinkingLevel(message: unknown): string | undefined {
+  if (getString(message, "role") !== "assistant") return undefined;
+  const thinkingLevel = getString(message, "thinkingLevel");
+  return thinkingLevel === undefined || thinkingLevel === "" ? undefined : thinkingLevel;
 }
 
 function normalizeBashExecution(message: unknown): ChatLine {
