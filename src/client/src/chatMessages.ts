@@ -105,11 +105,17 @@ function normalizeMeta(message: unknown): ChatLine["meta"] | undefined {
   const timestamp = normalizeTimestamp(getProperty(message, "timestamp"));
   const model = normalizeModel(message);
   const thinkingLevel = normalizeThinkingLevel(message);
-  if (timestamp === undefined && model === undefined && thinkingLevel === undefined) return undefined;
+  const turnId = normalizeAssistantTurnId(message);
+  const turnUsage = normalizeAssistantTurnUsage(message);
+  const turnHasTools = turnUsage === undefined ? undefined : assistantTurnHasTools(message);
+  if (timestamp === undefined && model === undefined && thinkingLevel === undefined && turnId === undefined && turnUsage === undefined) return undefined;
   return {
     ...(timestamp === undefined ? {} : { timestamp }),
     ...(model === undefined ? {} : { model }),
     ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+    ...(turnId === undefined ? {} : { turnId }),
+    ...(turnUsage === undefined ? {} : { turnUsage }),
+    ...(turnHasTools === undefined ? {} : { turnHasTools }),
   };
 }
 
@@ -137,6 +143,48 @@ function normalizeThinkingLevel(message: unknown): string | undefined {
   if (getString(message, "role") !== "assistant") return undefined;
   const thinkingLevel = getString(message, "thinkingLevel");
   return thinkingLevel === undefined || thinkingLevel === "" ? undefined : thinkingLevel;
+}
+
+function normalizeAssistantTurnId(message: unknown): string | undefined {
+  if (getString(message, "role") !== "assistant") return undefined;
+  return getString(message, "id") ?? getString(message, "responseId");
+}
+
+function assistantTurnHasTools(message: unknown): boolean {
+  const content = getProperty(message, "content");
+  return Array.isArray(content) && content.some((part) => getString(part, "type") === "toolCall");
+}
+
+function normalizeAssistantTurnUsage(message: unknown): NonNullable<NonNullable<ChatLine["meta"]>["turnUsage"]> | undefined {
+  if (getString(message, "role") !== "assistant") return undefined;
+  const usage = getProperty(message, "usage");
+  if (!isRecord(usage)) return undefined;
+  const input = usageNumber(usage, "input", "inputTokens");
+  const output = usageNumber(usage, "output", "outputTokens");
+  const cacheRead = usageNumber(usage, "cacheRead", "cache_read", "cacheReadTokens");
+  const cacheWrite = usageNumber(usage, "cacheWrite", "cache_write", "cacheWriteTokens");
+  const reasoning = usageNumber(usage, "reasoning", "reasoningTokens");
+  const total = usageNumber(usage, "totalTokens", "total");
+  if ([input, output, cacheRead, cacheWrite, reasoning, total].every((value) => value === undefined)) return undefined;
+  return {
+    tokens: {
+      ...(input === undefined ? {} : { input }),
+      ...(output === undefined ? {} : { output }),
+      ...(cacheRead === undefined ? {} : { cacheRead }),
+      ...(cacheWrite === undefined ? {} : { cacheWrite }),
+      ...(reasoning === undefined ? {} : { reasoning }),
+      ...(total === undefined ? {} : { total }),
+    },
+    partial: total === undefined,
+  };
+}
+
+function usageNumber(value: Record<string, unknown>, ...keys: string[]): number | undefined {
+  for (const key of keys) {
+    const candidate = value[key];
+    if (typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0) return candidate;
+  }
+  return undefined;
 }
 
 function normalizeBashExecution(message: unknown): ChatLine {

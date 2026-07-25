@@ -344,7 +344,7 @@ export interface PiAgentSession {
    * depending on pi-ai's deprecated `/compat` provider registry or leaking the full
    * `Agent`/`AgentSession` surface.
    */
-  agent: { streamFn: StreamFn };
+  agent: { streamFunction: StreamFn };
 }
 
 export interface PiSessionRuntime {
@@ -1260,7 +1260,7 @@ export class PiSessionService implements SessionRouteService {
 
   async availableModels(ref: PiSessionLookup): Promise<ClientSessionModel[]> {
     const session = await this.getOrOpen(ref);
-    await session.modelRuntime.reloadConfig();
+    await session.modelRuntime.refresh({ allowNetwork: false });
     const models = session.scopedModels.length > 0
       ? session.scopedModels.map((scoped) => scoped.model)
       : session.modelRuntime.getAvailableSnapshot();
@@ -1270,7 +1270,7 @@ export class PiSessionService implements SessionRouteService {
   async setModel(ref: PiSessionLookup, provider: string, modelId: string): Promise<ClientSessionStatus> {
     await this.assertWritable(ref);
     const session = await this.getOrOpen(ref, true);
-    await session.modelRuntime.reloadConfig();
+    await session.modelRuntime.refresh({ allowNetwork: false });
     const candidates = session.scopedModels.length > 0
       ? session.scopedModels.map((scoped) => scoped.model)
       : session.modelRuntime.getAvailableSnapshot();
@@ -2388,7 +2388,7 @@ export class PiSessionService implements SessionRouteService {
     const model = session.model;
     if (model === undefined) return;
 
-    void generateShortSessionName(session.agent.streamFn, model, firstMessage).then((name) => {
+    void generateShortSessionName(session.agent.streamFunction, model, firstMessage).then((name) => {
       this.applyGeneratedSessionName(session, name ?? fallbackSessionName(firstMessage));
     }).catch(() => {
       this.applyGeneratedSessionName(session, fallbackSessionName(firstMessage));

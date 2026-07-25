@@ -83,11 +83,39 @@ function applyFinalMessage(messages: ChatLine[], rawMessage: unknown): ChatLine[
 
   const ended = normalizeMessage(rawMessage);
   if (ended.length === 0) return undefined;
+  const assistantTurnMeta = ended.find((line) => line.meta?.turnUsage !== undefined)?.meta;
+  const toolCallIds = new Set(ended.flatMap((line) => line.parts.flatMap((part) => {
+    if ((part.type === "toolCall" || part.type === "skillRead") && part.toolCallId !== undefined) return [part.toolCallId];
+    return [];
+  })));
+  const reconciledMessages = assistantTurnMeta === undefined || toolCallIds.size === 0
+    ? messages
+    : attachAssistantTurnMeta(messages, toolCallIds, assistantTurnMeta);
   const displayEnded = ended
     .map((line) => line.role === "assistant" ? withoutToolCalls(line) : line)
     .filter((line) => line.parts.length > 0);
-  if (displayEnded.length === 0) return messages;
-  return displayEnded.reduce((next, line) => applyFinalLine(next, line), messages);
+  if (displayEnded.length === 0) return reconciledMessages;
+  return displayEnded.reduce((next, line) => applyFinalLine(next, line), reconciledMessages);
+}
+
+function attachAssistantTurnMeta(messages: ChatLine[], toolCallIds: Set<string>, turnMeta: NonNullable<ChatLine["meta"]>): ChatLine[] {
+  return messages.map((line) => {
+    const matches = line.parts.some((part) => (part.type === "toolExecution" || part.type === "toolResult" || part.type === "skillRead")
+      && part.toolCallId !== undefined && toolCallIds.has(part.toolCallId));
+    if (!matches) return line;
+    return {
+      ...line,
+      meta: {
+        ...line.meta,
+        ...(line.meta?.timestamp !== undefined || turnMeta.timestamp === undefined ? {} : { timestamp: turnMeta.timestamp }),
+        ...(turnMeta.model === undefined ? {} : { model: turnMeta.model }),
+        ...(turnMeta.thinkingLevel === undefined ? {} : { thinkingLevel: turnMeta.thinkingLevel }),
+        ...(turnMeta.turnId === undefined ? {} : { turnId: turnMeta.turnId }),
+        ...(turnMeta.turnUsage === undefined ? {} : { turnUsage: turnMeta.turnUsage }),
+        ...(turnMeta.turnHasTools === undefined ? {} : { turnHasTools: turnMeta.turnHasTools }),
+      },
+    };
+  });
 }
 
 function applyFinalLine(messages: ChatLine[], displayEnded: ChatLine): ChatLine[] {

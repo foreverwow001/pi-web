@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { groupChatMessages, summarizeChatGroup } from "./chatGroups";
+import { formalStageUsage, groupChatMessages, mainTurnUsage, summarizeChatGroup } from "./chatGroups";
 import type { ChatLine } from "./components/shared";
 
 const text = (role: ChatLine["role"], value: string): ChatLine => ({ role, parts: [{ type: "text", text: value }] });
@@ -105,6 +105,104 @@ describe("groupChatMessages", () => {
       { role: "assistant", parts: [{ type: "toolCall", toolName: "read", summary: "newer" }] },
       text("assistant", "answer"),
     ], 8)[0]).toMatchObject({ kind: "group", startIndex: 8, endIndex: 9 });
+  });
+});
+
+describe("mainTurnUsage", () => {
+  it("shows the exact Coordinator turn traffic for the reported two-read event group", () => {
+    const usage = { tokens: { input: 22_066, output: 187, cacheRead: 237_056, cacheWrite: 0, reasoning: 10, total: 259_309 }, partial: false };
+    const duplicatedTurnMeta = { turnId: "turn-259k", turnUsage: usage };
+    expect(mainTurnUsage([
+      { role: "tool", parts: [{ type: "toolExecution", toolName: "read", summary: "one", status: "success" }], meta: duplicatedTurnMeta },
+      { role: "tool", parts: [{ type: "toolExecution", toolName: "read", summary: "two", status: "success" }], meta: duplicatedTurnMeta },
+      { role: "assistant", parts: [{ type: "thinking", text: "inspect" }], meta: { turnId: "next-turn", turnUsage: { tokens: { total: 999 }, partial: false }, turnHasTools: true } },
+    ])).toEqual({ tokens: usage.tokens, turns: 1, partial: false });
+  });
+
+  it("aggregates distinct main turns without counting reasoning twice in total", () => {
+    expect(mainTurnUsage([
+      { role: "tool", parts: [{ type: "toolExecution", toolName: "read", summary: "a", status: "success" }], meta: { turnId: "a", turnUsage: { tokens: { input: 10, output: 2, cacheRead: 20, reasoning: 1, total: 32 }, partial: false } } },
+      { role: "assistant", parts: [{ type: "toolCall", toolName: "read", summary: "b" }], meta: { turnId: "b", turnUsage: { tokens: { input: 5, output: 1, cacheRead: 10, reasoning: 2, total: 16 }, partial: false } } },
+    ])).toEqual({ tokens: { input: 15, output: 3, cacheRead: 30, reasoning: 3, total: 48 }, turns: 2, partial: false });
+  });
+
+  it("keeps a text-only main turn when it shares an event group with earlier tool results", () => {
+    expect(mainTurnUsage([
+      { role: "tool", parts: [{ type: "toolExecution", toolName: "read", summary: "a", status: "success" }], meta: { turnId: "tool-turn", turnUsage: { tokens: { total: 32 }, partial: false }, turnHasTools: true } },
+      { role: "assistant", parts: [{ type: "thinking", text: "finalize" }], meta: { turnId: "text-turn", turnUsage: { tokens: { total: 16 }, partial: false }, turnHasTools: false } },
+    ])).toEqual({ tokens: { total: 48 }, turns: 2, partial: false });
+  });
+
+  it("returns undefined for ordinary events without assistant usage", () => {
+    expect(mainTurnUsage([{ role: "tool", parts: [{ type: "toolResult", toolName: "read", text: "ok", isError: false }] }])).toBeUndefined();
+  });
+});
+
+describe("formalStageUsage", () => {
+  const formalResult = (details: unknown): ChatLine => ({
+    role: "tool",
+    parts: [{ type: "toolResult", toolName: "pi_orchestrator_dispatch", text: "done", isError: false, details }],
+  });
+
+  it("extracts persistent completed child usage from final tool details", () => {
+    expect(formalStageUsage([formalResult({ evidence: {
+      role: "engineer",
+      child_session_id: "child-1",
+      child_model_attempts: [{ retryable_provider_failure: true }, { retryable_provider_failure: false }],
+      child_usage: {
+        hasUsage: true,
+        assistantMessages: 12,
+        tokens: { input: 120, output: 30, cacheRead: 850, cacheWrite: 10, reasoning: 7, total: 1010 },
+      },
+    } })])).toEqual({
+      children: [{
+        key: "child-1",
+        role: "engineer",
+        tokens: { input: 120, output: 30, cacheRead: 850, cacheWrite: 10, reasoning: 7, total: 1010 },
+        hasUsage: true,
+        partial: false,
+        assistantTurns: 12,
+        attempts: 2,
+        providerRetries: 1,
+      }],
+      tokens: { input: 120, output: 30, cacheRead: 850, cacheWrite: 10, reasoning: 7, total: 1010 },
+      hasUsage: true,
+      partial: false,
+      attempts: 2,
+      providerRetries: 1,
+    });
+  });
+
+  it("aggregates a parallel reviewer wave and de-duplicates live/final copies", () => {
+    const evidence = (role: string, id: string, total: number) => ({ role, child_session_id: id, child_usage: { hasUsage: true, tokens: { total } } });
+    expect(formalStageUsage([formalResult({
+      evidence: evidence("architecture-doc-steward", "arch", 400),
+      results: [
+        { evidence: evidence("architecture-doc-steward", "arch", 400) },
+        { evidence: evidence("data-migration-reviewer", "data", 600) },
+      ],
+    })])).toMatchObject({
+      children: [
+        { key: "arch", role: "architecture-doc-steward", tokens: { total: 400 } },
+        { key: "data", role: "data-migration-reviewer", tokens: { total: 600 } },
+      ],
+      tokens: { total: 1000 },
+      attempts: 2,
+    });
+  });
+
+  it("preserves unknown and partial usage instead of displaying zero", () => {
+    expect(formalStageUsage([formalResult({ evidence: {
+      role: "qa-reviewer",
+      child_session_id: "qa",
+      timed_out: true,
+      child_usage: { hasUsage: false, coverage: { complete: false }, tokens: {} },
+    } })])).toMatchObject({ hasUsage: false, partial: true, children: [{ hasUsage: false, partial: true }] });
+  });
+
+  it("does not create stage usage for preflight-only or ordinary tool events", () => {
+    expect(formalStageUsage([formalResult({ dispatched: false })])).toBeUndefined();
+    expect(formalStageUsage([{ role: "tool", parts: [{ type: "toolResult", toolName: "read", text: "ok", isError: false }] }])).toBeUndefined();
   });
 });
 

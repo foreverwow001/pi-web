@@ -1,10 +1,13 @@
 import type { TemplateResult } from "lit";
 import { describe, expect, it, vi } from "vitest";
 import type { QueuedSessionMessage, SessionStatus, SessionWarning } from "../api";
+import type { FormalStageUsage, MainTurnUsage } from "../chatGroups";
 import type { ChatLine } from "./shared";
 import {
   ChatView,
   chatEventAnchorKey,
+  chatFormalStageUsageLabel,
+  chatMainTurnUsageLabel,
   chatGroupAnchorKey,
   chatGroupScrollMarkerId,
   chatMessageGroupClassName,
@@ -173,6 +176,47 @@ describe("chatMessageMetadataLabel", () => {
       parts: [],
       meta: { model: { provider: "provider", id: "model" } },
     })).toBe("provider/model · think: unknown");
+  });
+});
+
+describe("event usage labels", () => {
+  it("labels main turn traffic separately from formal child traffic", () => {
+    const main: MainTurnUsage = {
+      tokens: { input: 22_066, output: 187, cacheRead: 237_056, reasoning: 10, total: 259_309 },
+      turns: 1,
+      partial: false,
+    };
+    expect(chatMainTurnUsageLabel(main)).toBe("Main · 259k tokens");
+    expect(chatMainTurnUsageLabel({ ...main, tokens: { input: 10 }, turns: 2, partial: true })).toBe("Main · usage unknown · 2 turns · partial");
+  });
+
+  const usage = (overrides: Partial<FormalStageUsage> = {}): FormalStageUsage => ({
+    children: [{ key: "child", role: "engineer", tokens: { total: 1_062_487 }, hasUsage: true, partial: false, attempts: 1, providerRetries: 0 }],
+    tokens: { total: 1_062_487 },
+    hasUsage: true,
+    partial: false,
+    attempts: 1,
+    providerRetries: 0,
+    ...overrides,
+  });
+
+  it("formats one completed child without adding conversation content", () => {
+    expect(chatFormalStageUsageLabel(usage())).toBe("Engineer · 1.1M tokens");
+  });
+
+  it("formats parallel, retry, partial, and unknown states", () => {
+    expect(chatFormalStageUsageLabel(usage({
+      children: [
+        { key: "a", role: "architecture-doc-steward", tokens: { total: 400 }, hasUsage: true, partial: false, attempts: 1, providerRetries: 0 },
+        { key: "d", role: "data-migration-reviewer", tokens: {}, hasUsage: false, partial: true, attempts: 2, providerRetries: 1 },
+      ],
+      tokens: { total: 400 },
+      hasUsage: true,
+      partial: true,
+      attempts: 3,
+      providerRetries: 1,
+    }))).toBe("Review wave · 2 children · 400 tokens · 3 attempts · partial");
+    expect(chatFormalStageUsageLabel(usage({ tokens: {}, hasUsage: false, partial: true }))).toBe("Engineer · usage unknown · partial");
   });
 });
 

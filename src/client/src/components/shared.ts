@@ -34,6 +34,20 @@ export type ChatPart =
   | { type: "roundUsage"; usage: RoundUsageSnapshot }
   | { type: "empty" };
 
+export interface TokenUsageBreakdown {
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  reasoning?: number;
+  total?: number;
+}
+
+export interface AssistantTurnUsage {
+  tokens: TokenUsageBreakdown;
+  partial: boolean;
+}
+
 export interface ChatLine {
   role: "user" | "assistant" | "tool" | "system" | "bash" | "skill";
   parts: ChatPart[];
@@ -42,6 +56,9 @@ export interface ChatLine {
     timestamp?: string;
     model?: { provider?: string; id?: string; responseId?: string };
     thinkingLevel?: string;
+    turnId?: string;
+    turnUsage?: AssistantTurnUsage;
+    turnHasTools?: boolean;
   };
 }
 
@@ -309,10 +326,21 @@ export const chatStyles = css`
   .msg.skill { border-color: var(--pi-purple-border); background: var(--pi-purple-surface); }
   .msg.event-group { padding: 0; border-color: var(--pi-border); background: var(--pi-bg); color: var(--pi-muted); }
   .msg.event-group.live { border-color: var(--pi-success-border); background: var(--pi-success-bg); }
-  .msg.event-group > summary { position: sticky; top: -26px; z-index: 5; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 9px 9px 0 0; border-bottom: 1px solid var(--pi-border-muted); background: var(--pi-bg); color: var(--pi-muted); }
+  .msg.event-group > summary { position: sticky; top: -26px; z-index: 5; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 8px 12px; border-radius: 9px 9px 0 0; border-bottom: 1px solid var(--pi-border-muted); background: var(--pi-bg); color: var(--pi-muted); }
   .msg.event-group.live > summary { border-bottom-color: var(--pi-success-border); background: var(--pi-success-bg); color: var(--pi-success); }
-  .msg.event-group > summary .label { margin: 0; }
+  .msg.event-group > summary .label { flex: 0 0 auto; margin: 0; }
+  .event-counts { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .event-usage-summary { display: flex; flex: 0 1 auto; align-items: center; gap: 8px; min-width: 0; margin-left: auto; overflow: hidden; }
+  .main-turn-usage, .formal-stage-usage { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--pi-text-secondary); font-size: 12px; }
   .group-body { padding: 0 12px 12px; }
+  .formal-stage-usage-details { display: grid; gap: 6px; padding: 10px 0; border-bottom: 1px solid var(--pi-border-muted); color: var(--pi-muted); font-size: 12px; }
+  .formal-stage-usage-row { display: flex; flex-wrap: wrap; gap: 4px 10px; min-width: 0; }
+  .formal-stage-usage-row strong { color: var(--pi-text-secondary); }
+  @media (max-width: 760px) {
+    .event-counts { display: none; }
+    .main-turn-usage, .formal-stage-usage { font-size: 11px; }
+    .formal-stage-usage-details { font-size: 11px; }
+  }
   .chat-image { display: block; max-width: 100%; max-height: 320px; margin: 8px 0 0; border: 1px solid var(--pi-border-muted); border-radius: 8px; object-fit: contain; cursor: zoom-in; }
   .chat-image:focus-visible { outline: 2px solid var(--pi-accent, var(--pi-success-border)); outline-offset: 2px; }
   dialog.image-zoom { position: fixed; inset: 0; margin: auto; max-width: calc(96vw - env(safe-area-inset-left) - env(safe-area-inset-right)); max-height: calc(96vh - env(safe-area-inset-top) - env(safe-area-inset-bottom)); width: fit-content; height: fit-content; padding: 0; border: none; background: transparent; overflow: visible; }

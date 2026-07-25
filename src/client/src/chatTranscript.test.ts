@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { groupChatMessages } from "./chatGroups";
+import { groupChatMessages, mainTurnUsage } from "./chatGroups";
 import { normalizeMessages, textMessage } from "./chatMessages";
 import { applyTranscriptEvent, seedStreamingPartial } from "./chatTranscript";
 import type { ChatLine } from "./components/shared";
@@ -143,6 +143,34 @@ describe("applyTranscriptEvent", () => {
       { role: "skill", parts: [{ type: "skillRead", name: "playwright", path: "/home/user/.agents/skills/playwright/SKILL.md" }], meta: { timestamp: "2026-05-09T12:00:00.000Z" } },
       { role: "tool", parts: [{ type: "toolResult", toolName: "read", text: "skill content", isError: false }] },
     ]);
+  });
+
+  it("attaches finalized assistant usage to completed live tool events", () => {
+    let messages: ChatLine[] = [];
+    for (const [toolCallId, path] of [["read-1", "one"], ["read-2", "two"]] as const) {
+      messages = applyTranscriptEvent(messages, { type: "tool.start", toolName: "read", toolCallId, summary: path, args: { path } }) ?? messages;
+      messages = applyTranscriptEvent(messages, { type: "tool.end", toolName: "read", toolCallId, text: "ok", isError: false, content: [{ type: "text", text: "ok" }] }) ?? messages;
+    }
+    messages = applyTranscriptEvent(messages, {
+      type: "message.end",
+      message: {
+        role: "assistant",
+        id: "turn-259k",
+        content: [
+          { type: "toolCall", id: "read-1", name: "read", arguments: { path: "one" } },
+          { type: "toolCall", id: "read-2", name: "read", arguments: { path: "two" } },
+        ],
+        usage: { input: 22_066, output: 187, cacheRead: 237_056, reasoning: 10, totalTokens: 259_309 },
+      },
+    }) ?? messages;
+
+    expect(messages.map((message) => message.meta?.turnId)).toEqual(["turn-259k", "turn-259k"]);
+    expect(messages.map((message) => message.meta?.turnHasTools)).toEqual([true, true]);
+    expect(mainTurnUsage(messages)).toEqual({
+      tokens: { input: 22_066, output: 187, cacheRead: 237_056, reasoning: 10, total: 259_309 },
+      turns: 1,
+      partial: false,
+    });
   });
 
   it("keeps edit tool preview and result updates on one execution card", () => {

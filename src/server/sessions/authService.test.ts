@@ -18,14 +18,13 @@ afterEach(async () => {
 describe("AuthService", () => {
   it("saves API keys and emits a global auth change after the runtime refreshes", async () => {
     const { auth, runtime, credentials, changes } = await createAuthService();
-    const reloadConfig = vi.spyOn(runtime, "reloadConfig").mockResolvedValue(undefined);
     const refresh = vi.spyOn(runtime, "refresh");
 
     await expect(auth.saveApiKey("anthropic", "sk-test")).resolves.toEqual({ accepted: true });
 
     await expect(credentials.read("anthropic")).resolves.toEqual({ type: "api_key", key: "sk-test" });
-    expect(reloadConfig).toHaveBeenCalledOnce();
-    expect(refresh).toHaveBeenCalledOnce();
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(refresh).toHaveBeenNthCalledWith(1, { allowNetwork: false });
     expect(changes).toEqual([{}]);
     auth.dispose();
   });
@@ -376,10 +375,12 @@ describe("AuthService", () => {
       expires: Date.now() + 60_000,
     };
     vi.spyOn(provider.auth.oauth, "login").mockResolvedValue(credential);
-    vi.spyOn(runtime, "reloadConfig").mockResolvedValue(undefined);
     const refreshStarted = deferred<undefined>();
     const finishRefresh = deferred<undefined>();
+    let refreshCallCount = 0;
     const refresh = vi.spyOn(runtime, "refresh").mockImplementation(async () => {
+      refreshCallCount += 1;
+      if (refreshCallCount === 1) return { aborted: false, errors: new Map() };
       refreshStarted.resolve(undefined);
       await finishRefresh.promise;
       return { aborted: false, errors: new Map() };
@@ -399,7 +400,7 @@ describe("AuthService", () => {
     expect(auth.oauthFlow(state.flowId)).not.toHaveProperty("error");
     await expect(credentials.read(provider.id)).resolves.toEqual(credential);
     expect(changes).toEqual([{}]);
-    expect(refresh).toHaveBeenCalledOnce();
+    expect(refresh).toHaveBeenCalledTimes(2);
     auth.dispose();
   });
 

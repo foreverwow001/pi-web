@@ -2,7 +2,7 @@ import { LitElement, html } from "lit";
 import { customElement, property, query, state } from "lit/decorators.js";
 import { repeat } from "lit/directives/repeat.js";
 import { ChatDisclosureController } from "../chatDisclosure";
-import { groupChatMessages, summarizeChatGroup, type ChatGroup } from "../chatGroups";
+import { formalStageUsage, groupChatMessages, mainTurnUsage, summarizeChatGroup, type ChatGroup, type FormalStageChildUsage, type FormalStageUsage, type MainTurnUsage } from "../chatGroups";
 import { capturePrependScrollAnchor, PREPEND_RESTORE_SETTLE_FRAMES, restorePrependScrollAnchor, type PrependScrollAnchor } from "../chatScrollAnchoring";
 import { shouldRequestEarlierMessages } from "../chatHistoryLoading";
 import { ChatScrollController, distanceFromScrollBottom, findFirstVisibleArticle, isNearScrollBottom, type ChatAnchorScrollPosition, type ChatScrollRestoreResult } from "../chatScrollPosition";
@@ -94,6 +94,37 @@ export function chatMessageGroupClassName(defaultOpen: boolean): string {
 /** The disclosure summary label for an event group, distinguishing the live tail. */
 export function chatMessageGroupLabel(defaultOpen: boolean): string {
   return defaultOpen ? "live events" : "events";
+}
+
+export function chatMainTurnUsageLabel(usage: MainTurnUsage): string {
+  const total = usage.tokens.total === undefined ? "usage unknown" : `${formatTokenCount(usage.tokens.total)} tokens`;
+  const turns = usage.turns > 1 ? ` · ${String(usage.turns)} turns` : "";
+  const partial = usage.partial ? " · partial" : "";
+  return `Main · ${total}${turns}${partial}`;
+}
+
+export function chatFormalStageUsageLabel(usage: FormalStageUsage): string {
+  const role = usage.children.length === 1 ? formalRoleLabel(usage.children[0]?.role ?? "formal child") : "Review wave";
+  const total = usage.hasUsage && usage.tokens.total !== undefined ? `${formatTokenCount(usage.tokens.total)} tokens` : "usage unknown";
+  const children = usage.children.length > 1 ? ` · ${String(usage.children.length)} children` : "";
+  const attempts = usage.attempts > usage.children.length ? ` · ${String(usage.attempts)} attempts` : "";
+  const partial = usage.partial ? " · partial" : "";
+  return `${role}${children} · ${total}${attempts}${partial}`;
+}
+
+function formalRoleLabel(role: string): string {
+  const labels: Record<string, string> = {
+    planner: "Planner",
+    engineer: "Engineer",
+    "domain-expert": "Domain",
+    "qa-reviewer": "QA",
+    "security-reviewer": "Security",
+    "data-migration-reviewer": "Data Migration",
+    "business-process-reviewer": "Business",
+    "architecture-doc-steward": "Architecture",
+    "browser-debugger": "Browser",
+  };
+  return labels[role] ?? role;
 }
 
 /** Whether a queued-message section shows the server clear-queue action. */
@@ -641,21 +672,73 @@ export class ChatView extends LitElement {
   private renderMessageGroup(messages: ChatLine[], startIndex: number, endIndex: number, defaultOpen: boolean) {
     const disclosureKey = this.groupDisclosureKey(startIndex, endIndex, defaultOpen);
     const open = this.disclosures.isOpen(disclosureKey, defaultOpen);
+    const mainUsage = mainTurnUsage(messages);
+    const childUsage = formalStageUsage(messages);
     return html`
       ${this.renderScrollMarker(this.groupScrollMarkerId(endIndex))}
       <details class=${chatMessageGroupClassName(defaultOpen)} data-index=${startIndex} data-scroll-anchor-id=${this.groupAnchorKey(startIndex)} ?open=${open} @toggle=${(event: Event) => { this.onGroupToggle(disclosureKey, event, defaultOpen); }}>
         <summary>
           <b class="label">${chatMessageGroupLabel(defaultOpen)}</b>
-          <span>${summarizeChatGroup(messages)}</span>
+          <span class="event-counts">${summarizeChatGroup(messages)}</span>
+          ${mainUsage === undefined && childUsage === undefined ? null : html`
+            <span class="event-usage-summary">
+              ${mainUsage === undefined ? null : html`<span class="main-turn-usage" title=${chatMainTurnUsageLabel(mainUsage)}>${chatMainTurnUsageLabel(mainUsage)}</span>`}
+              ${childUsage === undefined ? null : html`<span class="formal-stage-usage" title=${chatFormalStageUsageLabel(childUsage)}>${chatFormalStageUsageLabel(childUsage)}</span>`}
+            </span>
+          `}
         </summary>
-        ${open ? this.renderMessageGroupBody(messages, startIndex) : null}
+        ${open ? this.renderMessageGroupBody(messages, startIndex, mainUsage, childUsage) : null}
       </details>
     `;
   }
 
-  private renderMessageGroupBody(messages: ChatLine[], startIndex: number) {
+  private renderEventUsage(mainUsage?: MainTurnUsage, childUsage?: FormalStageUsage) {
+    return html`
+      <section class="formal-stage-usage-details" aria-label="Event token usage">
+        ${mainUsage === undefined ? null : this.renderMainTurnUsage(mainUsage)}
+        ${childUsage?.children.map((child) => this.renderFormalStageChildUsage(child)) ?? null}
+      </section>
+    `;
+  }
+
+  private renderMainTurnUsage(usage: MainTurnUsage) {
+    const token = (value: number | undefined) => value === undefined ? "unknown" : formatTokenCount(value);
+    return html`
+      <div class="formal-stage-usage-row">
+        <strong>Main</strong>
+        <span>Total ${token(usage.tokens.total)}</span>
+        <span>Input ${token(usage.tokens.input)}</span>
+        <span>Output ${token(usage.tokens.output)}</span>
+        <span>Cache ${token(usage.tokens.cacheRead)}</span>
+        <span>Reasoning ${token(usage.tokens.reasoning)}</span>
+        <span>${String(usage.turns)} ${usage.turns === 1 ? "turn" : "turns"}</span>
+        ${usage.partial ? html`<span>partial</span>` : null}
+      </div>
+    `;
+  }
+
+  private renderFormalStageChildUsage(child: FormalStageChildUsage) {
+    const token = (value: number | undefined) => value === undefined ? "unknown" : formatTokenCount(value);
+    return html`
+      <div class="formal-stage-usage-row">
+        <strong>${formalRoleLabel(child.role)}</strong>
+        <span>Total ${token(child.tokens.total)}</span>
+        <span>Input ${token(child.tokens.input)}</span>
+        <span>Output ${token(child.tokens.output)}</span>
+        <span>Cache ${token(child.tokens.cacheRead)}</span>
+        <span>Reasoning ${token(child.tokens.reasoning)}</span>
+        ${child.assistantTurns === undefined ? null : html`<span>${String(child.assistantTurns)} turns</span>`}
+        ${child.attempts <= 1 ? null : html`<span>${String(child.attempts)} attempts</span>`}
+        ${child.providerRetries <= 0 ? null : html`<span>${String(child.providerRetries)} provider retries</span>`}
+        ${child.partial ? html`<span>partial</span>` : null}
+      </div>
+    `;
+  }
+
+  private renderMessageGroupBody(messages: ChatLine[], startIndex: number, mainUsage?: MainTurnUsage, childUsage?: FormalStageUsage) {
     return html`
       <div class="group-body">
+        ${mainUsage === undefined && childUsage === undefined ? null : this.renderEventUsage(mainUsage, childUsage)}
         ${messages.map((message, offset) => {
           const toolOnly = this.isToolExecutionOnlyMessage(message);
           return html`

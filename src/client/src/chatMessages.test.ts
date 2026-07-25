@@ -86,6 +86,42 @@ describe("chat message normalization", () => {
     ]);
   });
 
+  it("preserves current assistant-turn usage on technical history events", () => {
+    const messages = normalizeMessages([{
+      role: "assistant",
+      id: "turn-259k",
+      timestamp: "2026-07-24T08:54:59.758Z",
+      provider: "openai-codex",
+      model: "gpt-5.6-sol",
+      usage: { input: 22_066, output: 187, cacheRead: 237_056, cacheWrite: 0, reasoning: 10, totalTokens: 259_309 },
+      content: [
+        { type: "toolCall", id: "read-1", name: "read", arguments: { path: "one" } },
+        { type: "toolCall", id: "read-2", name: "read", arguments: { path: "two" } },
+      ],
+    }]);
+
+    expect(messages).toHaveLength(2);
+    expect(messages.map((message) => message.meta?.turnId)).toEqual(["turn-259k", "turn-259k"]);
+    expect(messages.map((message) => message.meta?.turnHasTools)).toEqual([true, true]);
+    expect(messages[0]?.meta?.turnUsage).toEqual({
+      tokens: { input: 22_066, output: 187, cacheRead: 237_056, cacheWrite: 0, reasoning: 10, total: 259_309 },
+      partial: false,
+    });
+  });
+
+  it("supports legacy assistant usage aliases without inventing missing totals", () => {
+    expect(normalizeMessage({
+      role: "assistant",
+      responseId: "legacy-turn",
+      usage: { inputTokens: 10, outputTokens: 2, cacheReadTokens: 20, reasoningTokens: 1 },
+      content: [{ type: "toolCall", name: "read", arguments: { path: "one" } }],
+    })[0]?.meta).toMatchObject({
+      turnId: "legacy-turn",
+      turnUsage: { tokens: { input: 10, output: 2, cacheRead: 20, reasoning: 1 }, partial: true },
+      turnHasTools: true,
+    });
+  });
+
   it("pairs tool calls and results into execution cards when normalizing history", () => {
     expect(normalizeMessages([
       { role: "assistant", content: [{ type: "toolCall", id: "edit-1", name: "edit", arguments: { path: "src/app.ts", edits: [{ oldText: "old", newText: "new" }] } }] },
